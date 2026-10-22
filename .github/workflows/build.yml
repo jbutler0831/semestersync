@@ -45,10 +45,12 @@ jobs:
         with:
           path: installers
           merge-multiple: true
-      - run: gh release create "$GITHUB_REF_NAME" installers/* --repo "$GITHUB_REPOSITORY" --title "SemesterSync $GITHUB_REF_NAME" --notes-file - <<'NOTES'
+      - run: |
+          cat > notes.md <<'NOTES'
           **Mac:** download `SemesterSync-*-universal.dmg`, open it and drag SemesterSync into Applications. The first time, right-click the app and choose **Open**.
 
           **Windows:** download `SemesterSync-Setup-*.exe` and run it. If Windows shows "Windows protected your PC", choose **More info → Run anyway**.
           NOTES
+          gh release create "$GITHUB_REF_NAME" installers/* --repo "$GITHUB_REPOSITORY" --title "SemesterSync $GITHUB_REF_NAME" --notes-file notes.md
         env:
           GH_TOKEN: ${{ github.token }}
