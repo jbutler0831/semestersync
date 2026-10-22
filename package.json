@@ -68,7 +68,8 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "shortcutName": "SemesterSync"
+      "shortcutName": "SemesterSync",
+      "artifactName": "SemesterSync-Setup-${version}.${ext}"
     }
   }
 }

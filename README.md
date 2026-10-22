@@ -1,5 +1,7 @@
 # SemesterSync (desktop)
 
+**[Download for Mac or Windows](https://github.com/jbutler0831/semestersync/releases/latest)**
+
 A Mac and Windows app that turns course syllabi into a semester plan: every dated deliverable, each course's grading breakdown, a workload heatmap that shows where courses collide, and calendar export.
 
 ## Run it while developing
@@ -64,10 +66,10 @@ How it works:
 
 ```bash
 npm run dist:mac   # dist/SemesterSync-1.0.0-universal.dmg (Intel + Apple silicon)
-npm run dist:win   # dist/SemesterSync Setup 1.0.0.exe (x64 + arm64)
+npm run dist:win   # dist/SemesterSync-Setup-1.0.0.exe (x64 + arm64)
 ```
 
-Build each platform on its own OS. The GitHub Actions workflow in `.github/workflows/build.yml` builds both whenever you push a tag like `v1.0.0` and attaches the installers to the run.
+Build each platform on its own OS. The GitHub Actions workflow in `.github/workflows/build.yml` builds both whenever you push a tag like `v1.0.0` and posts the installers on the [Releases](https://github.com/jbutler0831/semestersync/releases) page.
 
 ### Signing (before you share it widely)
 
