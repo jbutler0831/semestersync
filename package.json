@@ -1,0 +1,74 @@
+{
+  "name": "semestersync",
+  "productName": "SemesterSync",
+  "version": "1.0.0",
+  "description": "Turn course syllabi into a semester schedule: deliverables, grade weights, workload heatmap and calendar export.",
+  "main": "src/main.js",
+  "author": "Jorel Butler",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist": "electron-builder --mac --win"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.132.0",
+    "@supabase/supabase-js": "2.117.3"
+  },
+  "devDependencies": {
+    "electron": "44.7.0",
+    "electron-builder": "26.15.3",
+    "pdfjs-dist": "3.11.174"
+  },
+  "build": {
+    "appId": "com.syllabussync.desktop",
+    "productName": "SemesterSync",
+    "copyright": "Copyright © 2026 Jorel Butler",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "mac": {
+      "category": "public.app-category.education",
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "SemesterSync"
+    }
+  }
+}
