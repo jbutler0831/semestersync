@@ -451,6 +451,192 @@ dialog.account .spinner { width: 16px; height: 16px; border-radius: 50%; border:
 .acct-card span:not(.avatar) { color: var(--muted); font-size: 12.5px; }
 @media (max-width: 860px) { .acct-btn .who { display: none; } .acct-btn { padding: 0 6px; } }
 
+
+/* ---------- Tabs (v2) ---------- */
+.nav button { border: 0; background: transparent; color: var(--muted); font-weight: 500; font-size: 13px; padding: 6px 10px; border-radius: 6px; white-space: nowrap; cursor: pointer; }
+.nav button:hover { color: var(--ink); background: var(--surface-2); }
+.nav button.on { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.pane { display: grid; gap: 28px; min-width: 0; }
+.pane-intro { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 10px 24px; }
+.pane-intro h1 { font: 800 clamp(24px, 3.2vw, 34px)/1.05 var(--f-display); letter-spacing: -.02em; margin: 0; }
+.pane-intro p { margin: 0; color: var(--muted); max-width: 60ch; }
+.bottomnav button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-height: 54px; font-size: 10.5px; font-weight: 600; color: var(--muted); border: 0; background: transparent; padding: 0; cursor: pointer; min-width: 0; }
+.bottomnav button svg { width: 20px; height: 20px; }
+.bottomnav button.on { color: var(--accent); }
+@media (max-width: 860px) {
+  .bottomnav { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  .pane { gap: 20px; }
+}
+.st-done { color: var(--good); background: var(--good-soft); }
+@media (max-width: 1240px) { .demo-pill { display: none; } }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; align-items: start; }
+@media (max-width: 960px) { .grid2, .grid3 { grid-template-columns: minmax(0, 1fr); } }
+.note { color: var(--muted); font-size: 12.5px; margin: 0; }
+.empty { padding: 28px 18px; text-align: center; color: var(--muted); }
+.inline-in { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 7px 10px; min-width: 0; }
+.inline-in:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.inline-in.n { width: 76px; font-family: var(--f-mono); text-align: right; }
+textarea.inline-in { width: 100%; resize: vertical; font: 13px/1.5 var(--f-body); }
+.pri { font: 600 11px/1 var(--f-body); padding: 4px 8px; border-radius: 999px; color: var(--muted); background: var(--surface-2); white-space: nowrap; }
+.pri.crit { color: var(--crit); background: var(--crit-soft); }
+.pri.warn { color: var(--warn); background: var(--warn-soft); }
+.banner { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--crit); background: var(--crit-soft); font-size: 13px; }
+.banner.ok { border-color: var(--good); background: var(--good-soft); }
+.banner b { display: block; margin-bottom: 2px; }
+.banner ul { margin: 4px 0 0; padding-left: 18px; }
+
+/* Plan */
+.dl-group { padding: 4px 0 8px; }
+.dl-group h3 { font: 500 11px/1 var(--f-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--faint); margin: 12px 18px 6px; }
+.dl { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; padding: 9px 18px; border-top: 1px solid var(--line); }
+.dl:first-of-type { border-top: 0; }
+.dl input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--good); margin: 0; cursor: pointer; }
+.dl .t { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.dl .t small { display: block; color: var(--muted); font-weight: 400; font-size: 12px; margin-top: 1px; }
+.dl .acts { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.dl.done .t { text-decoration: line-through; color: var(--faint); }
+.days { display: grid; grid-template-columns: repeat(auto-fill, minmax(178px, 1fr)); gap: 10px; padding: 16px 18px 18px; }
+.day { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: grid; gap: 8px; align-content: start; min-width: 0; background: var(--surface); }
+.day.today { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.day .dh { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.day .dh b { font: 700 13px var(--f-display); }
+.day .dh span { font: 400 11px var(--f-mono); color: var(--faint); }
+.capbar { height: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+.capbar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+.blk { display: grid; grid-template-columns: 4px minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 12.5px; }
+.blk .bar { align-self: stretch; border-radius: 2px; }
+.blk .bt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.blk .bt small { display: block; color: var(--muted); font-size: 11px; }
+.blk button { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; font: 600 11px var(--f-body); padding: 3px 6px; cursor: pointer; color: var(--muted); white-space: nowrap; }
+.blk button:hover { color: var(--good); border-color: var(--good); }
+.day .free { color: var(--faint); font-size: 12px; }
+.hours-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.hours-grid label { display: grid; gap: 4px; font: 500 11px var(--f-mono); color: var(--faint); text-align: center; }
+.hours-grid input { width: 100%; text-align: center; padding: 7px 4px; }
+details.settings-box { border-top: 1px solid var(--line); }
+details.settings-box summary { cursor: pointer; padding: 12px 18px; font-weight: 600; font-size: 13px; }
+details.settings-box .body { padding: 0 18px 16px; display: grid; gap: 12px; }
+
+/* Grades */
+.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 860px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.kpi { padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); min-width: 0; }
+.kpi .k { font: 500 11px/1 var(--f-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+.kpi .v { font: 700 26px/1.15 var(--f-display); margin-top: 8px; font-variant-numeric: tabular-nums; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.kpi .v small { font: 500 14px var(--f-mono); color: var(--muted); }
+.kpi .d { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.list-table { width: 100%; border-collapse: collapse; min-width: 0; }
+.list-table th { background: var(--surface-2); }
+.list-table td { padding: 8px 10px; }
+.list-table td.r, .list-table th.r { text-align: right; }
+.list-table tr.need td { background: color-mix(in srgb, var(--warn-soft) 60%, transparent); }
+@media (max-width: 640px) { .list-table .hide-sm { display: none; } }
+.gpa-big { font: 800 44px/1 var(--f-display); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.gpa-row { display: flex; flex-wrap: wrap; gap: 18px 28px; align-items: end; }
+.gpa-row .field { min-width: 120px; }
+.gpa-row .inline-in { width: 110px; }
+
+/* Study */
+.deck { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 6px; background: var(--surface); text-align: left; cursor: pointer; width: 100%; }
+.deck:hover { border-color: color-mix(in srgb, var(--line) 50%, var(--ink)); }
+.deck[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.deck b { font-size: 14px; overflow-wrap: anywhere; }
+.deck .meta { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--muted); font-size: 12px; align-items: center; }
+.deck-list { display: grid; gap: 8px; }
+.flash { border: 1px solid var(--line); border-radius: 14px; min-height: 220px; display: grid; place-items: center; padding: 28px 22px; text-align: center; background: var(--surface-2); font-size: 18px; line-height: 1.45; overflow-wrap: anywhere; }
+.flash .side { font: 500 11px/1 var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); display: block; margin-bottom: 12px; }
+.flash .ans { margin-top: 16px; padding-top: 16px; border-top: 1px dashed var(--line); color: var(--ink); font-size: 16px; }
+.rate { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.rate .btn { justify-content: center; flex-direction: column; gap: 2px; padding: 9px 6px; }
+.rate .btn small { font: 400 11px var(--f-mono); color: var(--muted); }
+.rate .again { color: var(--crit); } .rate .good { color: var(--good); }
+.cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.cards li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; align-items: start; }
+.cards li .q { font-weight: 600; overflow-wrap: anywhere; }
+.cards li .a { color: var(--muted); overflow-wrap: anywhere; }
+@media (max-width: 640px) { .cards li { grid-template-columns: minmax(0, 1fr) auto; } .cards li .a { grid-column: 1; } }
+.quiz-q { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 8px; }
+.quiz-q b { overflow-wrap: anywhere; }
+.choice { text-align: left; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 8px 10px; cursor: pointer; font-size: 13px; overflow-wrap: anywhere; }
+.choice:hover:not(:disabled) { border-color: var(--accent); }
+.choice.right { border-color: var(--good); background: var(--good-soft); color: var(--ink); }
+.choice.wrong { border-color: var(--crit); background: var(--crit-soft); color: var(--ink); }
+.choice:disabled { cursor: default; }
+.why { font-size: 12.5px; color: var(--muted); }
+.prose { font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.prose p { margin: 0 0 10px; }
+.prose ul, .prose ol { margin: 0 0 10px; padding-left: 20px; }
+.prose h4 { font: 700 15px var(--f-display); margin: 14px 0 6px; }
+.prose code { font: 12.5px var(--f-mono); background: var(--surface-2); padding: 1px 4px; border-radius: 4px; }
+.checks { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 13px; }
+.checks label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.checks input { accent-color: var(--accent); }
+
+/* Coach */
+.chat { display: flex; flex-direction: column; min-height: 520px; }
+.msgs { flex: 1; padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; overflow: auto; max-height: 62vh; }
+.msg { max-width: 82%; padding: 10px 14px; border-radius: 14px; font-size: 14px; line-height: 1.55; overflow-wrap: anywhere; }
+.msg.me { align-self: flex-end; background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 4px; white-space: pre-wrap; }
+.msg.ai { align-self: flex-start; background: var(--surface-2); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.msg.ai.err { border-color: var(--crit); color: var(--crit); }
+.msg .prose p:last-child, .msg .prose ul:last-child { margin-bottom: 0; }
+@media (max-width: 640px) { .msg { max-width: 94%; } }
+.composer { display: flex; gap: 8px; padding: 12px 18px 16px; border-top: 1px solid var(--line); align-items: flex-end; }
+.composer textarea { flex: 1; min-height: 44px; max-height: 160px; }
+.suggest { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 18px 12px; }
+.typing { display: inline-flex; gap: 4px; }
+.typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); animation: blink 1.2s infinite; }
+.typing i:nth-child(2) { animation-delay: .2s; } .typing i:nth-child(3) { animation-delay: .4s; }
+@keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+
+/* Rooms */
+.people { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.person { border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: grid; gap: 6px; min-width: 0; }
+.person.me { border-color: var(--accent); }
+.person .nm { display: flex; gap: 8px; align-items: center; font-weight: 700; min-width: 0; }
+.person .nm span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.person .st { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.person .tm { font: 600 20px var(--f-mono); font-variant-numeric: tabular-nums; }
+.person .tm.focus { color: var(--accent); } .person .tm.break { color: var(--good); }
+.dotav { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font: 700 12px var(--f-body); flex: none; }
+.timer-big { font: 700 54px/1 var(--f-mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.room-chat { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; max-height: 320px; overflow: auto; }
+.room-chat li { font-size: 13px; overflow-wrap: anywhere; }
+.room-chat li b { margin-right: 6px; }
+.room-chat li time { font: 400 11px var(--f-mono); color: var(--faint); margin-left: 6px; }
+.code-pill { font: 600 15px var(--f-mono); letter-spacing: .15em; padding: 6px 10px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--line); }
+.conn { font-size: 12px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+.conn::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
+.conn.off::before { background: var(--warn); }
+
+/* Insights */
+.hbars { display: grid; gap: 10px; }
+.hbar { display: grid; grid-template-columns: 92px minmax(0, 1fr) 92px; gap: 10px; align-items: center; font-size: 13px; }
+.hbar .lab { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.hbar .track { height: 12px; position: relative; }
+.hbar .track i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; min-width: 2px; }
+.hbar .track .tick { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); border-radius: 1px; }
+.hbar .val { font: 500 12.5px var(--f-mono); text-align: right; color: var(--ink); white-space: nowrap; }
+.vbars { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; align-items: end; height: 170px; padding-top: 8px; position: relative; }
+.vbars .col { display: grid; grid-template-rows: 1fr auto; height: 100%; gap: 6px; min-width: 0; cursor: default; background: transparent; border: 0; padding: 0; font: inherit; color: inherit; }
+.vbars .col .area { position: relative; display: flex; align-items: flex-end; justify-content: center; }
+.vbars .col .area i { display: block; width: min(28px, 70%); border-radius: 4px 4px 0 0; background: var(--s1); }
+.vbars .col .area i.over { background: var(--crit); }
+.vbars .col .area .cap { position: absolute; left: 6%; right: 6%; height: 2px; background: var(--ink); border-radius: 1px; }
+.vbars .col span { font: 500 10.5px var(--f-mono); color: var(--faint); text-align: center; white-space: nowrap; }
+.vbars .col:hover .area i, .vbars .col:focus-visible .area i { filter: brightness(1.1); outline: 2px solid var(--ink); outline-offset: 1px; }
+.axis-note { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--muted); margin-top: 10px; }
+.scenarios { display: flex; flex-wrap: wrap; gap: 6px; }
+.range-row { display: grid; gap: 6px; font-size: 13px; }
+.range-row label { display: flex; justify-content: space-between; color: var(--muted); }
+.range-row input[type=range] { width: 100%; accent-color: var(--accent); }
+.score-ring { display: flex; gap: 16px; align-items: center; }
+.score-ring .big { font: 800 44px/1 var(--f-display); font-variant-numeric: tabular-nums; }
+.wk { display: grid; grid-template-columns: 110px minmax(0, 1fr) 70px; gap: 10px; align-items: center; font-size: 13px; padding: 6px 0; border-top: 1px solid var(--line); }
+.wk:first-child { border-top: 0; }
+.wk .meter { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.wk .meter i { display: block; height: 100%; border-radius: 4px; }
 </style>
 </head>
 <body>
@@ -468,7 +654,7 @@ dialog.account .spinner { width: 16px; height: 16px; border-radius: 50%; border:
       <b>SemesterSync</b>
     </div>
     <nav class="nav" aria-label="Sections">
-      <a href="#source">Source</a><a href="#deliverables">Deliverables</a><a href="#grading">Grading</a><a href="#workload">Workload</a><a href="#sync">Calendar sync</a>
+      <button type="button" data-tab="semester">Semester</button><button type="button" data-tab="plan">Plan</button><button type="button" data-tab="grades">Grades</button><button type="button" data-tab="study">Study</button><button type="button" data-tab="coach">Coach</button><button type="button" data-tab="rooms">Rooms</button><button type="button" data-tab="insights">Insights</button>
     </nav>
     <span class="demo-pill">Google sync simulated</span>
     <button type="button" class="theme-btn" id="themeBtn" aria-label="Switch theme"></button>
@@ -476,6 +662,7 @@ dialog.account .spinner { width: 16px; height: 16px; border-radius: 50%; border:
 </header>
 
 <main class="wrap gutter">
+  <div class="pane" data-pane="semester">
   <section class="intro">
     <h1>Turn a syllabus into a <mark>semester you can see.</mark></h1>
     <p>Add a syllabus for each of your courses. The engine pulls out every dated deliverable and grading scheme, estimates the hours each one takes, and maps your whole semester's workload so you can see where courses collide before you sync it to your calendar.</p>
@@ -508,9 +695,11 @@ dialog.account .spinner { width: 16px; height: 16px; border-radius: 50%; border:
         <span class="legend-key"><i style="background:transparent;box-shadow:inset 0 -1.5px 0 var(--accent)"></i>Grade weight</span>
         <span class="legend-key"><i style="background:var(--good)"></i>Time</span>
         <span style="flex:1"></span>
-        <span class="kbd-hint">Drop a PDF here · <span class="kbd">Ctrl</span>+<span class="kbd">Enter</span> parses</span>
+        <span class="kbd-hint">Drop a PDF or photo here · <span class="kbd">Ctrl</span>+<span class="kbd">Enter</span> parses</span>
         <label class="btn sm" for="fileInput" style="cursor:pointer">Upload PDF</label>
         <input type="file" id="fileInput" accept=".pdf,.txt,.md,.text,.docx,application/pdf" class="sr">
+        <label class="btn sm" for="photoInput" style="cursor:pointer" title="Take or choose photos of a printed syllabus">Scan photo</label>
+        <input type="file" id="photoInput" accept="image/*" multiple class="sr">
         <button type="button" class="btn sm ghost" id="loadSample">Add sample courses</button>
       </div>
     </div>
@@ -679,13 +868,269 @@ dialog.account .spinner { width: 16px; height: 16px; border-radius: 50%; border:
       </div>
     </div>
   </section>
+  </div>
+
+  <div class="pane" data-pane="plan" hidden>
+    <section class="pane-intro">
+      <h1>Your plan</h1>
+      <p>What's due, what matters most, and when to work on it. The plan rebuilds every time you finish something, log time or miss a day.</p>
+    </section>
+    <div id="planRisk"></div>
+    <section class="grid2">
+      <div class="panel">
+        <div class="panel-head">
+          <div><div class="eyebrow">Smart deadlines</div><h2>Due soon</h2></div>
+          <div class="spacer"></div>
+          <span class="sub" id="dlCount"></span>
+        </div>
+        <div id="deadlines"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div><div class="eyebrow">Adaptive study planner</div><h2>Next 14 days</h2></div>
+          <div class="spacer"></div>
+          <span class="sub" id="planSum"></span>
+        </div>
+        <div class="days" id="planDays"></div>
+        <details class="settings-box" id="planSettings">
+          <summary>Your study hours</summary>
+          <div class="body">
+            <p class="note">Hours you can study on each day of the week. The planner never books more than this.</p>
+            <div class="hours-grid" id="hoursGrid"></div>
+            <div class="field" style="max-width:220px">
+              <label for="blockSize">Longest session for one task</label>
+              <select id="blockSize" class="inline-in">
+                <option value="1">1 hour</option><option value="1.5">1.5 hours</option><option value="2">2 hours</option><option value="3">3 hours</option>
+              </select>
+            </div>
+          </div>
+        </details>
+      </div>
+    </section>
+  </div>
+
+  <div class="pane" data-pane="grades" hidden>
+    <section class="pane-intro">
+      <h1>Grades &amp; GPA</h1>
+      <p>Enter scores as you get them back. See where you stand, what you need on the rest, and what it does to your GPA.</p>
+    </section>
+    <section class="coursebar" id="gradeChips" aria-label="Course"></section>
+    <section class="kpis" id="gradeKpis"></section>
+    <section class="grid2">
+      <div class="panel">
+        <div class="panel-head">
+          <div><div class="eyebrow">Grade predictor</div><h2 id="gpTitle">Scores</h2></div>
+        </div>
+        <div class="panel-body" style="display:grid;gap:14px">
+          <div class="range-row">
+            <label for="assume"><span>On work you haven't done yet, you average</span><b class="mono" id="assumeVal"></b></label>
+            <input type="range" id="assume" min="40" max="100" step="1">
+          </div>
+          <div class="field" style="max-width:260px">
+            <label for="targetLetter">Your goal in this course</label>
+            <select id="targetLetter" class="inline-in"></select>
+          </div>
+          <div id="needOut" class="note"></div>
+        </div>
+        <div class="table-scroll"><table class="list-table"><thead><tr><th>Graded work</th><th class="hide-sm">Due</th><th class="r">Weight</th><th class="r">Score %</th></tr></thead><tbody id="scoreRows"></tbody></table></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div><div class="eyebrow">GPA simulator</div><h2>This semester</h2></div>
+        </div>
+        <div class="panel-body" style="display:grid;gap:16px">
+          <div class="gpa-row">
+            <div><div class="eyebrow" style="margin-bottom:6px">Semester GPA</div><div class="gpa-big" id="semGpa">—</div></div>
+            <div><div class="eyebrow" style="margin-bottom:6px">Cumulative</div><div class="gpa-big" id="cumGpa" style="color:var(--muted)">—</div></div>
+          </div>
+          <div class="table-scroll"><table class="list-table"><thead><tr><th>Course</th><th class="r">Credits</th><th>Grade</th><th class="r">Points</th></tr></thead><tbody id="gpaRows"></tbody></table></div>
+          <div class="gpa-row">
+            <div class="field"><label for="priorGpa">GPA before this term</label><input id="priorGpa" class="inline-in" type="number" min="0" max="4" step="0.01" placeholder="e.g. 3.40"></div>
+            <div class="field"><label for="priorCr">Credits earned</label><input id="priorCr" class="inline-in" type="number" min="0" max="300" step="1" placeholder="e.g. 45"></div>
+            <div class="field"><label for="goalGpa">Goal cumulative GPA</label><input id="goalGpa" class="inline-in" type="number" min="0" max="4" step="0.01" placeholder="e.g. 3.50"></div>
+          </div>
+          <p class="note" id="gpaNote"></p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="pane" data-pane="study" hidden>
+    <section class="pane-intro">
+      <h1>Study</h1>
+      <p>Make flashcards, practice quizzes and study guides for any topic in your courses, then review cards on a spaced-repetition schedule timed to your exams.</p>
+    </section>
+    <section class="kpis" id="studyKpis"></section>
+    <section class="grid2">
+      <div style="display:grid;gap:20px;min-width:0">
+        <div class="panel">
+          <div class="panel-head"><div><div class="eyebrow">Study materials generator</div><h2>Make a study set</h2></div></div>
+          <form class="panel-body" id="genForm" style="display:grid;gap:12px">
+            <div class="grid2" style="gap:10px">
+              <div class="field"><label for="genCourse">Course</label><select id="genCourse" class="inline-in"></select></div>
+              <div class="field"><label for="genFor">Studying for</label><select id="genFor" class="inline-in"></select></div>
+            </div>
+            <div class="field"><label for="genTopic">Topic</label><input id="genTopic" class="inline-in" type="text" maxlength="160" placeholder="e.g. Chapter 4: Working memory" required></div>
+            <div class="field"><label for="genNotes">Your notes (optional)</label><textarea id="genNotes" class="inline-in" rows="4" maxlength="20000" placeholder="Paste lecture notes, a chapter outline or key terms. Claude builds the set from these."></textarea></div>
+            <div class="checks">
+              <label><input type="checkbox" id="genCards" checked> Flashcards</label>
+              <label><input type="checkbox" id="genQuiz" checked> Practice quiz</label>
+              <label><input type="checkbox" id="genGuide" checked> Study guide</label>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <button type="submit" class="btn primary" id="genBtn">Generate with Claude</button>
+              <button type="button" class="btn" id="genEmpty">Make cards myself</button>
+              <button type="button" class="btn" id="genStop" hidden>Stop</button>
+              <span class="note" id="genMsg"></span>
+            </div>
+          </form>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><div><div class="eyebrow">Your sets</div><h2>Study sets</h2></div></div>
+          <div class="panel-body"><div class="deck-list" id="deckList"></div></div>
+        </div>
+      </div>
+      <div class="panel" id="studyMain">
+        <div class="panel-head">
+          <div style="min-width:0"><div class="eyebrow" id="smEyebrow">Active recall</div><h2 id="smTitle">Review</h2></div>
+          <div class="spacer"></div>
+          <div class="seg" role="group" aria-label="Study mode" id="smModes"></div>
+        </div>
+        <div class="panel-body" id="smBody"></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="pane" data-pane="coach" hidden>
+    <section class="pane-intro">
+      <h1>Semester coach</h1>
+      <p>Ask Claude about your semester. The coach sees your courses, deadlines, grades and study plan in SemesterSync, and nothing else.</p>
+    </section>
+    <section class="panel chat">
+      <div class="msgs" id="coachMsgs" aria-live="polite"></div>
+      <div class="suggest" id="coachSuggest"></div>
+      <form class="composer" id="coachForm">
+        <textarea id="coachIn" class="inline-in" rows="1" maxlength="4000" placeholder="Ask about your week, an exam, your grades…" aria-label="Message the coach"></textarea>
+        <button type="submit" class="btn primary" id="coachSend">Send</button>
+        <button type="button" class="btn" id="coachStop" hidden>Stop</button>
+      </form>
+    </section>
+    <p class="note" id="coachNote"></p>
+  </div>
+
+  <div class="pane" data-pane="rooms" hidden>
+    <section class="pane-intro">
+      <h1>Study rooms</h1>
+      <p>Study alongside classmates. Everyone in a room sees who's there, what they're working on and their focus timer. Share the room code to invite people.</p>
+    </section>
+    <section id="roomJoin" class="panel">
+      <div class="panel-head"><div><div class="eyebrow">Join or start a room</div><h2>Study together</h2></div></div>
+      <form class="panel-body" id="roomForm" style="display:grid;gap:12px;max-width:560px">
+        <div class="grid2" style="gap:10px">
+          <div class="field"><label for="roomName">Your name in the room</label><input id="roomName" class="inline-in" type="text" maxlength="32" placeholder="e.g. Jordan" required></div>
+          <div class="field"><label for="roomCode">Room code</label><input id="roomCode" class="inline-in mono" type="text" maxlength="8" placeholder="Leave empty to start one" style="text-transform:uppercase;letter-spacing:.12em"></div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button type="submit" class="btn primary" id="roomGo">Start a room</button>
+          <span class="note" id="roomMsg"></span>
+        </div>
+        <p class="note">Only your name, what you're working on and your timer are shared. Your courses and grades stay private.</p>
+      </form>
+    </section>
+    <section id="roomLive" hidden style="display:grid;gap:20px">
+      <div class="panel">
+        <div class="panel-head">
+          <div><div class="eyebrow">Room</div><h2 style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">Code <span class="code-pill" id="roomCodeShow"></span></h2></div>
+          <div class="spacer"></div>
+          <span class="conn" id="roomConn">Connected</span>
+          <button type="button" class="btn sm" id="roomCopy">Copy code</button>
+          <button type="button" class="btn sm danger" id="roomLeave">Leave</button>
+        </div>
+        <div class="panel-body"><div class="people" id="roomPeople"></div></div>
+      </div>
+      <div class="grid2">
+        <div class="panel">
+          <div class="panel-head"><div><div class="eyebrow">You</div><h2>Focus timer</h2></div></div>
+          <div class="panel-body" style="display:grid;gap:14px">
+            <div class="field"><label for="roomTask">Working on</label><select id="roomTask" class="inline-in"></select></div>
+            <div class="timer-big" id="timerShow">25:00</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button type="button" class="btn primary" id="timerFocus">Start 25-min focus</button>
+              <button type="button" class="btn" id="timerBreak">5-min break</button>
+              <button type="button" class="btn ghost" id="timerStop">Stop</button>
+            </div>
+            <p class="note" id="timerNote">Finished focus sessions on a deliverable are added to the time you've logged in your plan.</p>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><div><div class="eyebrow">Room chat</div><h2>Messages</h2></div></div>
+          <div class="panel-body" style="display:grid;gap:12px">
+            <ul class="room-chat" id="roomChat"></ul>
+            <form id="roomChatForm" style="display:flex;gap:8px">
+              <input id="roomChatIn" class="inline-in" type="text" maxlength="500" placeholder="Say something to the room" style="flex:1" aria-label="Message">
+              <button type="submit" class="btn">Send</button>
+            </form>
+            <p class="note" id="roomChatNote" hidden></p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="pane" data-pane="insights" hidden>
+    <section class="pane-intro">
+      <h1>Insights</h1>
+      <p>How your semester is going, and whether your plan survives a bad week.</p>
+    </section>
+    <section class="kpis" id="insKpis"></section>
+    <section class="grid2">
+      <div class="panel">
+        <div class="panel-head"><div><div class="eyebrow">By course</div><h2>Projected grade</h2></div></div>
+        <div class="panel-body"><div class="hbars" id="insGrades"></div><div class="axis-note" id="insGradesNote"></div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><div><div class="eyebrow">By course</div><h2>Work left (hours)</h2></div></div>
+        <div class="panel-body"><div class="hbars" id="insLeft"></div><div class="axis-note">Estimated hours on deliverables you haven't finished, minus time you've logged.</div></div>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <div><div class="eyebrow">Next 8 weeks</div><h2>Planned study hours vs. your available hours</h2></div>
+      </div>
+      <div class="panel-body">
+        <div class="vbars" id="insWeeks"></div>
+        <div class="axis-note"><span class="legend-key"><i style="background:var(--s1)"></i>Planned hours</span><span class="legend-key"><i style="background:var(--crit)"></i>Over your available hours</span><span class="legend-key"><i style="height:2px;background:var(--ink)"></i>Hours you have that week</span></div>
+      </div>
+    </section>
+    <section class="panel" id="stress">
+      <div class="panel-head">
+        <div><div class="eyebrow">Semester stress test</div><h2>What if the week goes wrong?</h2></div>
+      </div>
+      <div class="grid2" style="padding:16px 18px 18px">
+        <div style="display:grid;gap:14px;align-content:start">
+          <div class="scenarios" id="stressPresets"></div>
+          <div class="range-row"><label for="stressDays"><span>Days you can't study</span><b class="mono" id="stressDaysVal"></b></label><input type="range" id="stressDays" min="0" max="10" value="0"></div>
+          <div class="field" style="max-width:220px"><label for="stressFrom">Starting</label><input type="date" id="stressFrom" class="inline-in"></div>
+          <div class="range-row"><label for="stressCap"><span>Study hours you actually get</span><b class="mono" id="stressCapVal"></b></label><input type="range" id="stressCap" min="40" max="130" step="5" value="100"></div>
+          <div class="score-ring"><div class="big" id="stressScore">—</div><div><b id="stressHead"></b><p class="note" id="stressSub"></p></div></div>
+        </div>
+        <div style="display:grid;gap:12px;align-content:start;min-width:0">
+          <div id="stressBreaks"></div>
+          <div id="stressWeeks"></div>
+        </div>
+      </div>
+    </section>
+  </div>
 </main>
 
 <nav class="bottomnav" aria-label="Sections">
-  <a href="#source" data-sec="source"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="4" y="2.5" width="12" height="15" rx="2"/><path d="M7 7h6M7 10h6M7 13h3.5" stroke-linecap="round"/></svg>Courses</a>
-  <a href="#deliverables" data-sec="deliverables"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 5.5l1.5 1.5 2.5-3M3.5 11l1.5 1.5 2.5-3M10 5.5h7M10 11h7M10 16h7M4 16h3"/></svg>Due</a>
-  <a href="#workload" data-sec="workload"><svg viewBox="0 0 20 20" fill="currentColor"><rect x="3" y="3" width="4" height="4" rx="1" opacity=".35"/><rect x="8" y="3" width="4" height="4" rx="1"/><rect x="13" y="3" width="4" height="4" rx="1" opacity=".6"/><rect x="3" y="8" width="4" height="4" rx="1"/><rect x="8" y="8" width="4" height="4" rx="1" opacity=".35"/><rect x="13" y="8" width="4" height="4" rx="1"/><rect x="3" y="13" width="4" height="4" rx="1" opacity=".6"/><rect x="8" y="13" width="4" height="4" rx="1"/><rect x="13" y="13" width="4" height="4" rx="1" opacity=".35"/></svg>Workload</a>
-  <a href="#sync" data-sec="sync"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="14" height="13" rx="2"/><path d="M3 8h14M7 2.5v3M13 2.5v3M8 12.5l1.5 1.5 3-3"/></svg>Sync</a>
+  <button type="button" data-tab="semester"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="4" y="2.5" width="12" height="15" rx="2"/><path d="M7 7h6M7 10h6M7 13h3.5" stroke-linecap="round"/></svg>Semester</button>
+  <button type="button" data-tab="plan"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 5.5l1.5 1.5 2.5-3M3.5 11l1.5 1.5 2.5-3M10 5.5h7M10 11h7M10 16h7M4 16h3"/></svg>Plan</button>
+  <button type="button" data-tab="grades"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 16l4-11 4 11M4.5 12h5M14.5 7v6M11.5 10h6"/></svg>Grades</button>
+  <button type="button" data-tab="study"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="2.5" y="5.5" width="11" height="11" rx="2"/><path d="M6.5 3.5h9a2 2 0 0 1 2 2v9"/><path d="M5.5 11h5" stroke-linecap="round"/></svg>Study</button>
+  <button type="button" data-tab="coach"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 5.5a2.5 2.5 0 0 1 2.5-2.5h9A2.5 2.5 0 0 1 17 5.5v6a2.5 2.5 0 0 1-2.5 2.5H9l-4 3v-3h0.5A2.5 2.5 0 0 1 3 11.5z"/><path d="M7 8.5h6" stroke-linecap="round"/></svg>Coach</button>
+  <button type="button" data-tab="rooms"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="2.7"/><circle cx="14" cy="8" r="2.2"/><path d="M2.5 16.5c.6-2.8 2.4-4.2 4.5-4.2s3.9 1.4 4.5 4.2M12 12.6c.6-.3 1.3-.4 2-.4 1.8 0 3.2 1.2 3.6 3.6"/></svg>Rooms</button>
+  <button type="button" data-tab="insights"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 16.5h14M5.5 13.5v-4M10 13.5v-8M14.5 13.5v-6"/></svg>Insights</button>
 </nav>
 
 <div class="tip" id="tip" hidden></div>

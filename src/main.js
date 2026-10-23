@@ -10,7 +10,8 @@ const MODEL = 'claude-opus-5-5';
 
 // The app was first released as "Syllabus Sync". Keep using that data folder so people
 // who update keep their saved courses, settings and sign-in.
-app.setPath('userData', path.join(app.getPath('appData'), 'Syllabus Sync'));
+// SEMESTERSYNC_DATA_DIR runs the app on a separate profile (for testing) without touching your data.
+app.setPath('userData', process.env.SEMESTERSYNC_DATA_DIR || path.join(app.getPath('appData'), 'Syllabus Sync'));
 
 let win = null;
 const inflight = new Map(); // request id -> AbortController
@@ -149,6 +150,48 @@ ipcMain.handle('claude:transcribe-pdf', async (_e, bytes) => {
   } catch (err) {
     const code = errorCode(err);
     return { ok: false, message: code === 'not_granted' ? 'Your Claude API key was rejected. Check it in Settings.' : code === 'rate_limited' ? 'Claude is busy. Try again in a minute.' : 'Couldn\'t reach Claude to read the scan. Check your connection.' };
+  }
+});
+
+// Everything else the page asks Claude: the semester coach, study sets and photos of a syllabus.
+const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+ipcMain.handle('claude:ask', async (event, { id, messages, images, schema, effort }) => {
+  const apiKey = await getApiKey();
+  if (!apiKey) return { ok: false, code: 'not_granted', message: 'Add a Claude API key in Settings.' };
+  if (!Array.isArray(messages) || !messages.length || messages.length > 40) return { ok: false, code: 'invalid_request', message: 'Bad request' };
+  const turns = messages.map(m => ({ role: m && m.role === 'assistant' ? 'assistant' : 'user', content: String((m && m.content) || '').slice(0, 60000) || '…' }));
+  if (turns[0].role !== 'user' || turns[turns.length - 1].role !== 'user') return { ok: false, code: 'invalid_request', message: 'Bad request' };
+  if (Array.isArray(images) && images.length) {
+    const blocks = images.slice(0, 8)
+      .filter(im => im && IMAGE_TYPES.includes(im.type) && im.data && im.data.byteLength <= MAX_IMAGE_BYTES)
+      .map(im => ({ type: 'image', source: { type: 'base64', media_type: im.type, data: Buffer.from(im.data).toString('base64') } }));
+    if (!blocks.length) return { ok: false, code: 'image_rejected', message: 'That image type or size isn\'t supported.' };
+    const last = turns[turns.length - 1];
+    last.content = [...blocks, { type: 'text', text: last.content }];
+  }
+  const format = schema && typeof schema === 'object' && JSON.stringify(schema).length < 20000 ? { format: { type: 'json_schema', schema } } : {};
+  const ctl = new AbortController();
+  inflight.set(id, ctl);
+  try {
+    const client = new Anthropic({ apiKey });
+    const stream = client.beta.messages.stream({
+      model: MODEL,
+      max_tokens: 16000,
+      betas: ['server-side-fallback-2026-07-01'],
+      fallbacks: 'default',
+      output_config: { effort: ['low', 'medium', 'high'].includes(effort) ? effort : 'medium', ...format },
+      messages: turns,
+    }, { signal: ctl.signal });
+    stream.on('text', delta => { if (!event.sender.isDestroyed()) event.sender.send('claude:delta', { id, delta }); });
+    const message = await stream.finalMessage();
+    if (message.stop_reason === 'refusal') return { ok: false, code: 'refused', message: 'Claude declined this request.' };
+    const text = message.content.filter(b => b.type === 'text').map(b => b.text).join('');
+    return { ok: true, text, truncated: message.stop_reason === 'max_tokens' };
+  } catch (err) {
+    return { ok: false, code: errorCode(err), message: err && err.message ? String(err.message).slice(0, 300) : 'Request failed' };
+  } finally {
+    inflight.delete(id);
   }
 });
 

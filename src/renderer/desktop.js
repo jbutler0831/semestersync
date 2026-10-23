@@ -214,6 +214,9 @@
     for (const json of local) {
       try { const c = JSON.parse(json); await d.cloud.set('course-' + c.id, { json }); } catch { /* skip unreadable course */ }
     }
+    let extras = [];
+    try { extras = JSON.parse(localStorage.getItem('ssync-extras-v1') || '[]'); } catch { /* nothing saved locally */ }
+    for (const [id, json] of extras) if (id === 'extras' || String(id).startsWith('deck-')) await d.cloud.set(id, { json });
   }
   async function onAuthSubmit(e) {
     e.preventDefault();
@@ -265,7 +268,7 @@
     const notified = new Set(readJson(NOTIFIED_KEY, []));
     const now = Date.now(), soon = now + 36 * 3600 * 1000;
     for (const c of courses) for (const it of c.items || []) {
-      if (!it.sync) continue;
+      if (!it.sync || it.done) continue;
       const [y, m, day] = it.date.split('-').map(Number);
       const [h, mi] = (it.time || '23:59').split(':').map(Number);
       const due = new Date(y, m - 1, day, h, mi).getTime();

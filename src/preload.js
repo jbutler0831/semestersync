@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 const progressHandlers = new Map();
 ipcRenderer.on('claude:progress', (_e, { id, chars }) => { const fn = progressHandlers.get(id); if (fn) fn(chars); });
+const deltaHandlers = new Map();
+ipcRenderer.on('claude:delta', (_e, { id, delta }) => { const fn = deltaHandlers.get(id); if (fn) fn(delta); });
 
 contextBridge.exposeInMainWorld('desktop', {
   platform: process.platform,
@@ -12,6 +14,11 @@ contextBridge.exposeInMainWorld('desktop', {
       if (onProgress) progressHandlers.set(id, onProgress);
       try { return await ipcRenderer.invoke('claude:extract', { id, prompt }); }
       finally { progressHandlers.delete(id); }
+    },
+    async ask(id, payload, onDelta) {
+      if (onDelta) deltaHandlers.set(id, onDelta);
+      try { return await ipcRenderer.invoke('claude:ask', { id, ...payload }); }
+      finally { deltaHandlers.delete(id); }
     },
     cancel: id => ipcRenderer.send('claude:cancel', id),
     transcribePdf: bytes => ipcRenderer.invoke('claude:transcribe-pdf', bytes),
@@ -35,6 +42,18 @@ contextBridge.exposeInMainWorld('desktop', {
     list: () => ipcRenderer.invoke('cloud:list'),
     set: (id, body) => ipcRenderer.invoke('cloud:set', { id, body }),
     remove: id => ipcRenderer.invoke('cloud:delete', { id }),
+  },
+  rooms: {
+    join: code => ipcRenderer.invoke('room:join', { code }),
+    presence: p => ipcRenderer.invoke('room:presence', p),
+    send: text => ipcRenderer.invoke('room:send', { text }),
+    leave: () => ipcRenderer.invoke('room:leave'),
+    on(name, fn) {
+      if (!['peers', 'message', 'connection'].includes(name)) return () => {};
+      const h = (_e, data) => fn(data);
+      ipcRenderer.on('room:' + name, h);
+      return () => ipcRenderer.removeListener('room:' + name, h);
+    },
   },
   saveIcs: (text, open) => ipcRenderer.invoke('ics:save', { text, open }),
   onMenu: (name, fn) => ipcRenderer.on('menu:' + name, () => fn()),

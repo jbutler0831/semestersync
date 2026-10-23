@@ -202,4 +202,70 @@ function registerExtra(ipcMain) {
   });
 }
 
-module.exports = { register: ipcMain => { register(ipcMain); registerExtra(ipcMain); } };
+/* ---------- Study rooms (Supabase Realtime presence + broadcast; nothing is stored) ---------- */
+let room = null; // { channel, key, name }
+const clip = (s, n) => String(s ?? '').replace(/[\u0000-\u001f]/g, '').slice(0, n);
+// Everything from other people is untrusted: keep only short strings and a well-formed timer.
+function cleanPresence(p) {
+  const t = p && p.timer;
+  const timer = t && (t.mode === 'focus' || t.mode === 'break') && Number.isFinite(+t.ends) ? { mode: t.mode, ends: +t.ends } : null;
+  return { name: clip(p && p.name, 32), task: clip(p && p.task, 120), timer };
+}
+async function leaveRoom() {
+  if (!room) return { ok: true };
+  const r = room; room = null;
+  try { await r.channel.untrack(); } catch { /* already gone */ }
+  try { await getClient().removeChannel(r.channel); } catch { /* already gone */ }
+  return { ok: true };
+}
+function registerRooms(ipcMain) {
+  ipcMain.handle('room:join', async (event, { code }) => {
+    const c = getClient();
+    if (!c) return { ok: false, message: 'Study rooms use the account server. Set up Supabase (see the README) first.' };
+    code = clip(code, 8).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (code.length < 4) return { ok: false, message: 'Room codes are at least 4 letters or numbers.' };
+    await leaveRoom();
+    const key = require('node:crypto').randomUUID();
+    const sender = event.sender;
+    const send = (name, data) => { if (!sender.isDestroyed()) sender.send('room:' + name, data); };
+    const channel = c.channel('study-' + code, { config: { presence: { key }, broadcast: { self: false } } });
+    channel.on('presence', { event: 'sync' }, () => {
+      const peers = Object.entries(channel.presenceState()).slice(0, 50)
+        .map(([k, metas]) => ({ id: k, me: k === key, ...cleanPresence(metas[metas.length - 1]) }));
+      send('peers', peers);
+    });
+    channel.on('broadcast', { event: 'chat' }, ({ payload }) => {
+      const text = clip(payload && payload.text, 500);
+      if (text) send('message', { id: clip(payload.from, 40), name: clip(payload.name, 32), text, at: Date.now() });
+    });
+    const status = await new Promise(resolve => {
+      let first = true;
+      const timer = setTimeout(() => { if (first) { first = false; resolve('TIMED_OUT'); } }, 10000);
+      channel.subscribe(s => {
+        if (first && ['SUBSCRIBED', 'CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(s)) { first = false; clearTimeout(timer); resolve(s); return; }
+        if (room && room.channel === channel) send('connection', s === 'SUBSCRIBED');
+      });
+    });
+    if (status !== 'SUBSCRIBED') {
+      try { await c.removeChannel(channel); } catch { /* never connected */ }
+      return { ok: false, message: 'Couldn\'t connect to the study room. Check your internet connection and try again.' };
+    }
+    room = { channel, key, name: '' };
+    return { ok: true };
+  });
+  ipcMain.handle('room:presence', async (_e, p) => {
+    if (!room) return { ok: false };
+    const clean = cleanPresence(p);
+    room.name = clean.name;
+    const res = await room.channel.track(clean);
+    return { ok: res === 'ok' };
+  });
+  ipcMain.handle('room:send', async (_e, { text }) => {
+    if (!room) return { ok: false, code: 'not_connected', message: 'Not in a room' };
+    const res = await room.channel.send({ type: 'broadcast', event: 'chat', payload: { from: room.key, name: room.name, text: clip(text, 500) } });
+    return res === 'ok' ? { ok: true } : { ok: false, code: 'upstream_error', message: 'Message didn\'t send.' };
+  });
+  ipcMain.handle('room:leave', leaveRoom);
+}
+
+module.exports = { register: ipcMain => { register(ipcMain); registerExtra(ipcMain); registerRooms(ipcMain); } };

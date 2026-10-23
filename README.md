@@ -4,12 +4,28 @@
 
 A Mac and Windows app that turns course syllabi into a semester plan: every dated deliverable, each course's grading breakdown, a workload heatmap that shows where courses collide, and calendar export.
 
+## What it does
+
+| Tab | What's in it |
+|---|---|
+| **Semester** | Add syllabi as PDFs, text or photos (**Scan photo** reads a printed page with Claude). Every deliverable, grading breakdown, workload heatmap and calendar export. |
+| **Plan** | Smart deadlines (overdue, today, this week) ranked by priority, with done checkboxes and time logging. An adaptive study planner books work into the hours you have each day and re-plans whenever you finish something, log time or miss a day. Deadlines that won't fit are flagged as at risk. |
+| **Grades** | Grade predictor: enter scores and see your current grade, projected final and what you need on the rest for each letter. GPA simulator with credits, what-if grades, cumulative GPA and a goal GPA. |
+| **Study** | Claude makes flashcards, a practice quiz and a study guide from a topic and your notes. Flashcards use spaced repetition (SM-2 style), timed so cards come up again before the exam they're for. |
+| **Coach** | Chat with Claude about your semester. It sees your courses, deadlines, grades and plan, and nothing else. |
+| **Rooms** | Study rooms: join with a code, see who's there, what they're working on and their focus timers, and chat. Finished focus sessions count as logged time. |
+| **Insights** | Deadlines done, hours logged, projected GPA, grades and remaining work by course, planned hours vs. available hours for 8 weeks, and a **stress test** that shows what breaks if you lose days or study less. |
+
+Claude features (photo scanning, study sets, coach) need a Claude API key in Settings. Study rooms use Supabase Realtime (on by default in new projects); only a name, current task and timer are shared, and nothing is stored.
+
 ## Run it while developing
 
 ```bash
 npm install
 npm start
 ```
+
+Set `SEMESTERSYNC_DATA_DIR=/some/folder` to run on a separate profile without touching your saved courses.
 
 ## Claude parsing
 
@@ -65,8 +81,8 @@ How it works:
 ## Build installers
 
 ```bash
-npm run dist:mac   # dist/SemesterSync-1.0.0-universal.dmg (Intel + Apple silicon)
-npm run dist:win   # dist/SemesterSync-Setup-1.0.0.exe (x64 + arm64)
+npm run dist:mac   # dist/SemesterSync-1.1.0-universal.dmg (Intel + Apple silicon)
+npm run dist:win   # dist/SemesterSync-Setup-1.1.0.exe (x64 + arm64)
 ```
 
 Build each platform on its own OS. The GitHub Actions workflow in `.github/workflows/build.yml` builds both whenever you push a tag like `v1.0.0` and posts the installers on the [Releases](https://github.com/jbutler0831/semestersync/releases) page.
