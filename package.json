@@ -12,7 +12,8 @@
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
     "dist": "electron-builder --mac --win",
-    "test": "electron test/e2e.js"
+    "test": "node test/taskparse.test.js && electron test/e2e.js",
+    "test:parse": "node test/taskparse.test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.132.0",
