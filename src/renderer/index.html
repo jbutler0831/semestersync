@@ -775,6 +775,27 @@ dl.keys dt { white-space: nowrap; } dl.keys dd { margin: 0; color: var(--muted);
 .remind { display: grid; gap: 10px; }
 .remind .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .remind input[type=time] { width: 112px; }
+
+/* Final-exam targets, weighted calculator, GPA range */
+.targets { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+.target { border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; background: var(--surface); }
+.target .l { font: 700 15px var(--f-display); }
+.target .n { font: 600 18px var(--f-mono); margin-top: 2px; }
+.target small { display: block; color: var(--muted); font-size: 11.5px; }
+.target.goal { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.target.out .n { color: var(--faint); font-size: 13px; }
+.target.lock .n { color: var(--good); font-size: 13px; }
+.final-result { font-size: 14px; }
+.final-result b { font: 700 18px var(--f-display); }
+.list-table.calc input { width: 84px; text-align: right; }
+.list-table.calc input.lbl { width: 100%; text-align: left; }
+.list-table.calc small { display: block; color: var(--muted); font-size: 11px; }
+.calc-total { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.calc-total b { font: 700 26px var(--f-display); }
+.row-btns { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.gpa-range { font-size: 13px; color: var(--muted); }
+.gpa-range b { color: var(--ink); }
+.gpa-sub { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -1120,6 +1141,7 @@ dl.keys dt { white-space: nowrap; } dl.keys dd { margin: 0; color: var(--muted);
             <div><div class="eyebrow" style="margin-bottom:6px">Semester GPA</div><div class="gpa-big" id="semGpa">—</div></div>
             <div><div class="eyebrow" style="margin-bottom:6px">Cumulative</div><div class="gpa-big" id="cumGpa" style="color:var(--muted)">—</div></div>
           </div>
+          <div class="gpa-range" id="gpaRange"></div>
           <div class="table-scroll"><table class="list-table"><thead><tr><th>Course</th><th class="r">Credits</th><th>Grade</th><th class="r">Points</th></tr></thead><tbody id="gpaRows"></tbody></table></div>
           <div class="gpa-row">
             <div class="field"><label for="priorGpa">GPA before this term</label><input id="priorGpa" class="inline-in" type="number" min="0" max="4" step="0.01" placeholder="e.g. 3.40"></div>
@@ -1127,6 +1149,36 @@ dl.keys dt { white-space: nowrap; } dl.keys dd { margin: 0; color: var(--muted);
             <div class="field"><label for="goalGpa">Goal cumulative GPA</label><input id="goalGpa" class="inline-in" type="number" min="0" max="4" step="0.01" placeholder="e.g. 3.50"></div>
           </div>
           <p class="note" id="gpaNote"></p>
+        </div>
+      </div>
+    </section>
+    <section class="grid2">
+      <div class="panel" id="finalPanel">
+        <div class="panel-head">
+          <div><div class="eyebrow">Final-exam targets</div><h2 id="finalTitle">What you need on the final</h2></div>
+          <div class="spacer"></div>
+          <select id="finalPick" class="head-select" aria-label="Which item is the final"></select>
+        </div>
+        <div class="panel-body" style="display:grid;gap:14px">
+          <p class="note" id="finalNote"></p>
+          <div class="targets" id="finalRows"></div>
+          <div class="range-row" id="finalIfRow">
+            <label for="finalIf"><span>If you score this on the final</span><b class="mono" id="finalIfVal"></b></label>
+            <input type="range" id="finalIf" min="0" max="100" step="1">
+          </div>
+          <div class="final-result" id="finalIfOut"></div>
+        </div>
+      </div>
+      <div class="panel" id="calcPanel">
+        <div class="panel-head">
+          <div><div class="eyebrow">Weighted grade calculator</div><h2>By category</h2></div>
+          <div class="spacer"></div>
+          <button type="button" class="btn sm ghost" id="calcReset">Use my scores</button>
+        </div>
+        <div class="table-scroll"><table class="list-table calc"><thead><tr><th>Category</th><th class="r">Weight</th><th class="r">Your average</th><th class="r">Points</th></tr></thead><tbody id="calcRows"></tbody></table></div>
+        <div class="panel-body" style="display:grid;gap:10px">
+          <div class="calc-total" id="calcTotal"></div>
+          <div class="row-btns"><button type="button" class="btn sm" id="calcAdd">+ Add a category</button><span class="note" id="calcNote"></span></div>
         </div>
       </div>
     </section>

@@ -1003,7 +1003,7 @@ const HERE = window.desktop ? 'on this computer' : 'in this browser';
 const store = { mode: 'none', col: null, base: new Map(), timer: null, status: 'sample', busy: false, uid: null, who: '', signedOut: false, lastOk: null, fails: 0, retryAt: 0, dirtySince: 0, loaded: false, problem: '' };
 const STORE_KEY = 'ssync-courses-v1';
 const CACHE_KEY = 'ssync-account-cache-v1';
-const serialize = c => JSON.stringify({ id: c.id, code: c.code, title: c.title, text: c.text, categories: c.categories, items: c.items, color: c.color, parser: c.parser, order: c.order, credits: c.credits, target: c.target, override: c.override, sample: c.sample || undefined, source: c.source, review: c.review, meets: c.meets });
+const serialize = c => JSON.stringify({ id: c.id, code: c.code, title: c.title, text: c.text, categories: c.categories, items: c.items, color: c.color, parser: c.parser, order: c.order, credits: c.credits, target: c.target, override: c.override, sample: c.sample || undefined, source: c.source, review: c.review, meets: c.meets, finalId: c.finalId, catAvg: c.catAvg, calc: c.calc });
 function localDocs() {
   const m = new Map();
   for (const c of state.courses) m.set('course-' + c.id, serialize(c));
@@ -1209,6 +1209,9 @@ function cleanCourse(x) {
   if (typeof x.override === 'string' && SCALE.some(s => s[1] === x.override)) c.override = x.override;
   if (x.sample || SAMPLES.includes(x.text)) c.sample = true;
   if (x.source && typeof x.source === 'object') c.source = { name: clip(x.source.name, 120), kind: clip(x.source.kind, 12), added: clip(x.source.added, 10), kept: !!x.source.kept };
+  if (typeof x.finalId === 'string' && /^[\w.-]{1,60}$/.test(x.finalId)) c.finalId = x.finalId;
+  if (x.catAvg && typeof x.catAvg === 'object') { c.catAvg = {}; for (const [k, v] of Object.entries(x.catAvg).slice(0, 30)) if (isFinite(+v)) c.catAvg[clip(k, 80)] = num(v, 0, 150, 0); }
+  if (Array.isArray(x.calc)) c.calc = x.calc.slice(0, 20).filter(r => r && typeof r === 'object').map(r => ({ label: clip(r.label, 60) || 'Category', pct: num(r.pct, 0, 100, 0), avg: r.avg === null || r.avg === undefined || r.avg === '' ? null : num(r.avg, 0, 150, null) }));
   if (Array.isArray(x.meets)) c.meets = x.meets.slice(0, 6).filter(m => m && Array.isArray(m.days) && /^\d{2}:\d{2}$/.test(m.start) && /^\d{2}:\d{2}$/.test(m.end)).map(m => ({ days: [...new Set(m.days.map(Number).filter(d => d >= 0 && d <= 6))].sort(), start: m.start, end: m.end, where: clip(m.where, 40), kind: ['Class', 'Lab', 'Discussion'].includes(m.kind) ? m.kind : 'Class' }));
   if (x.review && typeof x.review === 'object') c.review = { pending: !!x.review.pending, at: num(x.review.at, 0, 1e15, 0) };
   return c;
@@ -2041,7 +2044,7 @@ function renderGrades() {
   $('gradeChips').innerHTML = state.courses.map(x => `<button type="button" class="cchip" data-gc="${x.id}" aria-pressed="${x.id === gradesCid}"><span class="dot" style="background:${colorOf(x)}"></span>${esc(x.code)}</button>`).join('');
   if (!c) {
     $('gradeKpis').innerHTML = ''; $('scoreRows').innerHTML = `<tr class="empty-row"><td colspan="4">Add a course on the Semester tab first.</td></tr>`;
-    $('needOut').textContent = ''; renderGpa(); return;
+    $('needOut').textContent = ''; renderFinal(null); renderCalc(null); renderGpa(); return;
   }
   const st = standing(c);
   const cur = st.current != null ? letterOf(st.current) : null, proj = st.projected != null ? letterOf(st.projected) : null;
@@ -2063,18 +2066,21 @@ function renderGrades() {
     const past = dueDate(i) < TODAY;
     return `<tr data-iid="${i.id}" class="${past && !hasScore(i) ? 'need' : ''}"><td><b style="font-weight:600">${esc(i.title)}</b>${past && !hasScore(i) ? '<div class="due-meta" style="padding:0">Graded? Enter your score</div>' : ''}</td><td class="hide-sm mono" style="font-size:12px;color:var(--muted)">${fmtDay(dueDate(i))}</td><td class="r mono">${fmtH(i.weight)}%</td><td class="r"><input class="inline-in n" type="number" min="0" max="150" step="0.5" value="${hasScore(i) ? +i.score : ''}" placeholder="—" data-score aria-label="Score for ${esc(i.title)}"></td></tr>`;
   }).join('') : `<tr class="empty-row"><td colspan="4">No graded items in ${esc(c.code)} yet. Grade weights come from the syllabus's grading table.</td></tr>`;
+  renderFinal(c, st);
+  if (!$('calcRows').contains(document.activeElement)) renderCalc(c);
   renderGpa();
 }
 function renderGpa() {
-  let pts = 0, cr = 0;
+  let pts = 0, cr = 0, lo = 0, hi = 0;
   $('gpaRows').innerHTML = state.courses.map(c => {
     const credits = c.credits ?? 3, auto = (() => { const st = standing(c); return st.projected != null ? letterOf(st.projected) : null; })();
-    const L = courseLetter(c);
-    if (L && credits > 0) { pts += L[2] * credits; cr += credits; }
-    return `<tr data-cid="${c.id}"><td>${tagHtml(c)}</td><td class="r"><input class="inline-in n" style="width:62px" type="number" min="0" max="12" step="0.5" value="${credits}" data-credits aria-label="Credits for ${esc(c.code)}"></td><td><select class="inline-in" data-override aria-label="Grade for ${esc(c.code)}"><option value="">${auto ? `Projected (${auto[1]})` : 'No projection'}</option>${SCALE.map(s => `<option${c.override === s[1] ? ' selected' : ''}>${s[1]}</option>`).join('')}</select></td><td class="r mono">${L ? L[2].toFixed(1) : '—'}</td></tr>`;
+    const L = courseLetter(c), rg = courseRange(c);
+    if (L && credits > 0) { pts += L[2] * credits; cr += credits; lo += (rg ? rg.lo[2] : L[2]) * credits; hi += (rg ? rg.hi[2] : L[2]) * credits; }
+    return `<tr data-cid="${c.id}"><td>${tagHtml(c)}</td><td class="r"><input class="inline-in n" style="width:62px" type="number" min="0" max="12" step="0.5" value="${credits}" data-credits aria-label="Credits for ${esc(c.code)}"></td><td><select class="inline-in" data-override aria-label="Grade for ${esc(c.code)}"><option value="">${auto ? `Projected (${auto[1]})` : 'No projection'}</option>${SCALE.map(s => `<option${c.override === s[1] ? ' selected' : ''}>${s[1]}</option>`).join('')}</select>${rg && !c.override && rg.lo[1] !== rg.hi[1] ? `<span class="gpa-sub">could be ${rg.lo[1]} to ${rg.hi[1]}</span>` : ''}</td><td class="r mono">${L ? L[2].toFixed(1) : '—'}</td></tr>`;
   }).join('') || `<tr class="empty-row"><td colspan="4">No courses yet.</td></tr>`;
   const sem = cr ? pts / cr : null;
   $('semGpa').textContent = sem != null ? sem.toFixed(2) : '—';
+  $('gpaRange').innerHTML = cr ? `Semester estimate: likely <b>${sem.toFixed(2)}</b>. Ace everything left: <b>${(hi / cr).toFixed(2)}</b>. Slip 15 points below your current averages: <b>${(lo / cr).toFixed(2)}</b>.` : '';
   const pg = parseFloat(extras.gpa.prior), pc = parseFloat(extras.gpa.priorCredits), goal = parseFloat(extras.gpa.goal);
   if (document.activeElement !== $('priorGpa')) $('priorGpa').value = extras.gpa.prior;
   if (document.activeElement !== $('priorCr')) $('priorCr').value = extras.gpa.priorCredits;
@@ -2107,6 +2113,106 @@ $('gpaRows').addEventListener('change', e => {
 });
 for (const [id, key] of [['priorGpa', 'prior'], ['priorCr', 'priorCredits'], ['goalGpa', 'goal']]) {
   $(id).addEventListener('change', e => { extras.gpa[key] = e.target.value; markDirty(); renderGpa(); });
+}
+
+/* ---------- Final-exam targets ---------- */
+const finalIfBy = new Map();
+function finalOf(c) {
+  const graded = c.items.filter(i => i.weight > 0 && !i.ungraded);
+  if (c.finalId) { const f = graded.find(i => i.id === c.finalId); if (f) return f; }
+  const exams = graded.filter(i => i.type === 'Exam').sort((a, b) => a.date.localeCompare(b.date));
+  return exams.find(i => /\bfinal\b/i.test(i.title)) || exams[exams.length - 1] || null;
+}
+function renderFinal(c, st) {
+  const show = (msg) => { $('finalNote').innerHTML = msg; $('finalRows').innerHTML = ''; $('finalIfRow').hidden = true; $('finalIfOut').innerHTML = ''; };
+  $('finalPick').hidden = true;
+  if (!c) { $('finalTitle').textContent = 'What you need on the final'; show('Add a course on the Semester tab first.'); return; }
+  const graded = c.items.filter(i => i.weight > 0 && !i.ungraded).sort((a, b) => a.date.localeCompare(b.date));
+  const f = finalOf(c);
+  $('finalPick').innerHTML = graded.map(i => `<option value="${i.id}"${f && i.id === f.id ? ' selected' : ''}>${esc(i.title.slice(0, 40))} (${fmtH(i.weight)}%)</option>`).join('');
+  $('finalPick').hidden = graded.length < 2;
+  if (!st.wAll || !f) { $('finalTitle').textContent = 'What you need on the final'; show(st.wAll ? `No exams with a grade weight in ${esc(c.code)}. Choose the item that works as your final from the list.` : `${esc(c.code)} has no grade weights yet, so targets can't be worked out.`); return; }
+  $('finalTitle').textContent = `What you need on ${f.title.length > 28 ? 'the final' : f.title}`;
+  const others = st.graded.filter(i => i !== f && !hasScore(i));
+  const wOthers = others.reduce((a, i) => a + i.weight, 0);
+  const fScored = hasScore(f);
+  const base = st.earned - (fScored ? f.weight * +f.score / 100 : 0) + wOthers * st.assume / 100;
+  const result = x => (base + f.weight * x / 100) / st.wAll * 100;
+  const goal = c.target || 'A';
+  $('finalNote').innerHTML = `${esc(f.title)} is worth <b>${fmtH(f.weight)}%</b> of ${esc(c.code)}${f.date ? ` (${fmtDay(dueDate(f))})` : ''}. ${wOthers ? `Assumes you average <b>${st.assume}%</b> on the other ${fmtH(wOthers)}% still to come; change that with the slider above.` : 'Everything else is already scored.'}${st.scored.length ? '' : ' You haven’t entered any scores, so this uses that average for everything.'}`;
+  $('finalRows').innerHTML = SCALE.filter(s => s[0] >= 60).map(([min, L]) => {
+    const need = (min - result(0)) / (result(100) - result(0)) * 100;
+    const cls = need <= 0 ? 'lock' : need > 100 ? 'out' : '';
+    return `<div class="target ${cls}${L === goal ? ' goal' : ''}"><div class="l">${L}${L === goal ? ' <small style="display:inline">· your goal</small>' : ''}</div><div class="n">${need <= 0 ? 'Locked in' : need > 100 ? 'Out of reach' : Math.ceil(need) + '%'}</div><small>${min}%+ overall</small></div>`;
+  }).join('');
+  $('finalIfRow').hidden = false;
+  const x = finalIfBy.has(c.id) ? finalIfBy.get(c.id) : fScored ? +f.score : Math.round(st.assume);
+  $('finalIf').value = x; $('finalIfVal').textContent = x + '%';
+  const r = result(x), L = letterOf(r);
+  $('finalIfOut').innerHTML = `You’d finish ${esc(c.code)} with <b>${r.toFixed(1)}%</b> <b>${L[1]}</b>${fScored && x === +f.score ? ' (your actual final score)' : ''}.`;
+}
+$('finalPick').addEventListener('change', e => { const c = courseById(gradesCid); if (!c) return; c.finalId = e.target.value; finalIfBy.delete(c.id); markDirty(); renderGrades(); });
+$('finalIf').addEventListener('input', e => { finalIfBy.set(gradesCid, +e.target.value); const c = courseById(gradesCid); if (c) renderFinal(c, standing(c)); });
+
+/* ---------- Weighted grade calculator ---------- */
+// One row per grading category: the weight, your average (from your scores, or typed in) and the points it earns.
+function catAverages(c) {
+  return c.categories.map((k, ci) => {
+    const its = c.items.filter(i => i.cat === ci && hasScore(i));
+    const w = its.reduce((a, i) => a + (i.weight || 1), 0);
+    return { label: k.label, pct: k.pct, avg: its.length ? its.reduce((a, i) => a + (i.weight || 1) * +i.score, 0) / w : null, n: its.length };
+  });
+}
+function renderCalc(c) {
+  if (!c) { $('calcRows').innerHTML = `<tr class="empty-row"><td colspan="4">Add a course first.</td></tr>`; $('calcTotal').innerHTML = ''; $('calcNote').textContent = ''; return; }
+  const typed = c.catAvg || {}, rows = [];
+  for (const k of catAverages(c)) rows.push({ ...k, typed: typed[k.label], custom: false });
+  (c.calc || []).forEach((k, n) => rows.push({ label: k.label, pct: k.pct, avg: null, n: 0, typed: k.avg, custom: true, idx: n }));
+  let pts = 0, wUsed = 0, wAll = 0;
+  $('calcRows').innerHTML = rows.length ? rows.map(r => {
+    const v = r.typed != null && r.typed !== '' ? +r.typed : r.avg;
+    wAll += +r.pct || 0;
+    if (v != null) { pts += (+r.pct || 0) * v / 100; wUsed += +r.pct || 0; }
+    const src = r.typed != null && r.typed !== '' ? (r.custom ? '' : 'typed in') : r.n ? `from ${r.n} score${r.n > 1 ? 's' : ''}` : 'no scores yet';
+    return `<tr ${r.custom ? `data-custom="${r.idx}"` : `data-cat="${esc(r.label)}"`}>
+      <td>${r.custom ? `<input class="inline-in lbl" data-ck="label" value="${esc(r.label)}" aria-label="Category name">` : `${esc(r.label)}`}</td>
+      <td class="r">${r.custom ? `<input class="inline-in" type="number" min="0" max="100" step="0.5" data-ck="pct" value="${r.pct}" aria-label="Weight">` : `${fmtH(r.pct)}%`}</td>
+      <td class="r"><input class="inline-in" type="number" min="0" max="150" step="0.5" data-ck="avg" value="${r.typed != null && r.typed !== '' ? +r.typed : ''}" placeholder="${r.avg != null ? r.avg.toFixed(1) : '—'}" aria-label="Your average in ${esc(r.label)}"><small>${src}</small></td>
+      <td class="r mono">${v != null ? fmtH(Math.round((+r.pct || 0) * v) / 100) : '—'}${r.custom ? ` <button type="button" class="icon-btn" data-cdel aria-label="Remove ${esc(r.label)}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>` : ''}</td></tr>`;
+  }).join('') : `<tr class="empty-row"><td colspan="4">${esc(c.code)} has no grading categories. Add them below to use the calculator.</td></tr>`;
+  const grade = wUsed ? pts / wUsed * 100 : null;
+  $('calcTotal').innerHTML = grade != null ? `<b>${grade.toFixed(1)}%</b><b>${letterOf(grade)[1]}</b><span class="note">weighted average of the categories filled in (${fmtH(wUsed)}% of the course)${wUsed < wAll - 0.01 ? `; the rest are left out until they have an average` : ''}. At these averages they earn ${fmtH(pts)} of their ${fmtH(wUsed)} points.</span>` : '<span class="note">Type an average for any category to see your weighted grade.</span>';
+  $('calcNote').textContent = Math.abs(wAll - 100) > 0.5 && wAll ? `Weights add up to ${fmtH(wAll)}%, not 100%.` : '';
+  $('calcReset').hidden = !Object.keys(typed).length;
+}
+function calcEdit(e) {
+  const c = courseById(gradesCid), tr = e.target.closest('tr'); if (!c || !tr) return;
+  const k = e.target.dataset.ck;
+  if (tr.dataset.custom != null) {
+    const row = (c.calc || [])[+tr.dataset.custom]; if (!row) return;
+    if (e.type === 'click') { if (!e.target.closest('[data-cdel]')) return; c.calc.splice(+tr.dataset.custom, 1); }
+    else if (k === 'label') row.label = e.target.value.trim().slice(0, 60) || row.label;
+    else if (k === 'pct') row.pct = Math.max(0, Math.min(100, +e.target.value || 0));
+    else if (k === 'avg') row.avg = e.target.value === '' ? null : Math.max(0, Math.min(150, +e.target.value));
+  } else if (k === 'avg' && e.type === 'change') {
+    c.catAvg = c.catAvg || {};
+    if (e.target.value === '') delete c.catAvg[tr.dataset.cat]; else c.catAvg[tr.dataset.cat] = Math.max(0, Math.min(150, +e.target.value));
+    if (!Object.keys(c.catAvg).length) delete c.catAvg;
+  } else return;
+  markDirty(); renderCalc(c);
+}
+$('calcRows').addEventListener('change', calcEdit);
+$('calcRows').addEventListener('click', calcEdit);
+$('calcAdd').onclick = () => { const c = courseById(gradesCid); if (!c) return; (c.calc = c.calc || []).push({ label: 'New category', pct: 10, avg: null }); markDirty(); renderCalc(c); const ins = $('calcRows').querySelectorAll('input.lbl'); if (ins.length) { ins[ins.length - 1].focus(); ins[ins.length - 1].select(); } };
+$('calcReset').onclick = () => { const c = courseById(gradesCid); if (!c) return; delete c.catAvg; markDirty(); renderCalc(c); };
+
+/* ---------- GPA estimate range ---------- */
+// Likely: the projection above. Best: 100% on everything left. Worst: 15 points below your current average.
+function courseRange(c) {
+  if (c.override) { const L = SCALE.find(s => s[1] === c.override); return L ? { lo: L, mid: L, hi: L } : null; }
+  const st = standing(c); if (!st.wAll) return null;
+  const at = a => letterOf((st.earned + st.left * a / 100) / st.wAll * 100);
+  return { lo: at(Math.max(0, (st.current ?? st.assume) - 15)), mid: letterOf(st.projected), hi: at(100) };
 }
 
 /* ---------- Study: generator, spaced repetition, quizzes ---------- */

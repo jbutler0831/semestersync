@@ -269,6 +269,25 @@ async function phaseLocal(A) {
   await sleep(600);
   check('the menu-bar/tray companion gets today’s summary', traySummary && traySummary.top.length === 3 && traySummary.due.length > 0, traySummary);
 
+  console.log('\n# Grades: final-exam targets, weighted calculator, GPA estimate');
+  await A.js(`document.querySelector('.nav [data-tab="grades"]').click()`); await sleep(300);
+  await A.js(`[...document.querySelectorAll('#gradeChips [data-gc]')].find(b => /BIO 150/.test(b.textContent)).click()`); await sleep(200);
+  await A.js(`(() => { const ins = [...document.querySelectorAll('#scoreRows [data-score]')]; [88, 76].forEach((v, i) => { ins[i].value = v; ins[i].dispatchEvent(new Event('change', { bubbles: true })); }); })()`); await sleep(200);
+  const fin = await A.js(`({ title: document.getElementById('finalTitle').textContent, rows: [...document.querySelectorAll('#finalRows .target')].map(t => t.innerText.replace(/\\n+/g, ' ')), note: document.getElementById('finalNote').innerText })`);
+  check('final-exam targets show the score needed for each grade', /Final Exam/.test(fin.title) && fin.rows.length >= 10 && fin.rows.every(r => /(\d+%|Locked in|Out of reach)/.test(r)), fin);
+  await A.setVal('#finalIf', '100'); const ifHi = await A.js(`document.getElementById('finalIfOut').innerText`);
+  await A.setVal('#finalIf', '0'); const ifLo = await A.js(`document.getElementById('finalIfOut').innerText`);
+  check('the final-score slider changes the finishing grade', ifHi !== ifLo && /finish BIO 150 with/.test(ifHi), [ifHi, ifLo]);
+  const calc1 = await A.js(`({ rows: [...document.querySelectorAll('#calcRows tr')].map(r => r.innerText.replace(/\\s+/g, ' ')), total: document.getElementById('calcTotal').innerText })`);
+  check('the calculator fills category averages from scores', calc1.rows.some(r => /Lab reports.*from \d+ scores?/.test(r)) && /%/.test(calc1.total), calc1);
+  await A.js(`(() => { const tr = [...document.querySelectorAll('#calcRows tr')].find(r => /Midterm/.test(r.innerText)); const i = tr.querySelector('[data-ck="avg"]'); i.value = '95'; i.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  const calc2 = await A.js(`document.getElementById('calcTotal').innerText`);
+  check('typing a category average updates the weighted grade', calc2 !== calc1.total, [calc1.total, calc2]);
+  const nRows = await A.js(`document.querySelectorAll('#calcRows tr').length`);
+  await A.click('#calcAdd');
+  check('you can add your own category', (await A.js(`document.querySelectorAll('#calcRows tr').length`)) === nRows + 1);
+  check('the semester GPA shows a likely value and a range', /likely \d\.\d\d.*Ace everything left: \d\.\d\d.*Slip 15 points.*\d\.\d\d/.test(await A.js(`document.getElementById('gpaRange').innerText`)));
+
   console.log('\n# Search and keyboard');
   await A.key('k', { meta: true, ctrl: process.platform !== 'darwin' });
   check('Ctrl/⌘ K opens search', await A.until(`!!document.querySelector('dialog.search-dlg[open]')`, 2000));
