@@ -4405,7 +4405,7 @@ function renderWeak() {
     const c = t.cid ? courseById(t.cid) : null, pct = t.m == null ? null : Math.round(t.m * 100);
     const f = t.flag, tk = f && f.task ? findTask(f.task) : null;
     const st = f && f.resolved ? ['Improved', 'good'] : t.status === 'weak' ? ['Weak', 'crit'] : t.status === 'strong' ? ['Strong', 'good'] : t.status === 'new' ? ['Not enough answers', ''] : f ? ['Improving', 'warn'] : ['OK', ''];
-    const trend = f && !f.resolved && pct != null ? `${f.before}% when flagged → ${pct}% now` : f && f.resolved ? `${f.before}% → ${f.after}%` : t.before != null && pct != null ? `${Math.round(t.before * 100)}% earlier → ${pct}% recently` : '';
+    const trend = f && !f.resolved && pct != null && pct !== f.before ? `${f.before}% when flagged → ${pct}% now` : f && !f.resolved ? `flagged ${fmtDay(new Date(f.at))}` : f && f.resolved ? `${f.before}% → ${f.after}%` : t.before != null && pct != null ? `${Math.round(t.before * 100)}% earlier → ${pct}% recently` : '';
     const miss = t.missed.map(missedText).filter(Boolean);
     return `<div class="wrow" data-wk="${esc(t.key)}">
       <div class="wmain">
