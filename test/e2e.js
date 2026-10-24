@@ -35,6 +35,8 @@ shell.openPath = async p => { opened.push(p); return ''; };
 shell.openExternal = async () => {};
 
 require('../src/main.js');
+let traySummary = null;
+ipcMain.on('tray:update', (_e, s) => { traySummary = s; });
 
 /* ---------- Fake account server: one shared cloud, a signed-in flag per window ---------- */
 const cloud = new Map(); // doc id -> body
@@ -86,7 +88,7 @@ function newWindow(partition) {
 }
 
 const SYLLABUS = `BIO 150: Introduction to Biology
-Instructor: Dr. Rivera
+Instructor: Dr. Rivera · Mon/Wed 9:00–9:50 AM · Life Sciences 101
 
 GRADING
 Lab reports (3) ........ 30%
@@ -229,6 +231,44 @@ async function phaseLocal(A) {
   await A.click('#missedLog'); await sleep(200);
   check('"I did it" logs the missed hours', !(await A.js(`!!document.getElementById('missedBanner')`)) && /Logged 2 h/.test(await A.js(`document.getElementById('toast').textContent`)));
 
+  console.log('\n# Today, class times and reminders');
+  await A.js(`document.querySelector('.nav [data-tab="today"]').click()`); await sleep(300);
+  const td = await A.js(`({ top: document.querySelectorAll('#todayTop .dl.top').length, due: document.querySelectorAll('#todayDue .dl').length, title: document.getElementById('todayTitle').textContent })`);
+  check('Today shows the top 3 priorities and what’s due next', td.top === 3 && td.due > 0, td);
+  const meets = await A.js(`[...document.querySelectorAll('#meetsEdit .meets')].map(m => m.querySelector('.mh').textContent + ' :: ' + [...m.querySelectorAll('input[data-day]:checked')].map(i => i.dataset.day).join(',') + ' ' + [...m.querySelectorAll('input[type=time]')].map(i => i.value).join('-') + ' ' + (m.querySelector('.where') ? m.querySelector('.where').value : ''))`);
+  check('class times are read from the syllabus', meets.some(m => /BIO 150.*:: 1,3 09:00-09:50 Life Sciences 101/s.test(m)), meets);
+  await A.js(`(() => { const d = new Date().getDay(); const m = [...document.querySelectorAll('#meetsEdit .meets')].find(x => /BIO 150/.test(x.textContent)); const box = m.querySelector('input[data-day="' + d + '"]'); if (!box.checked) { box.checked = true; box.dispatchEvent(new Event('change', { bubbles: true })); } })()`); await sleep(300);
+  check('a class meeting today shows under Classes today', /BIO 150/.test(await A.js(`document.getElementById('todayClasses').innerText`)));
+  await A.js(`window.__notes = []; window.Notification = function (t, o) { window.__notes.push(t + ' | ' + ((o && o.body) || '')); }; 1`);
+  const toggle = async (k, on) => A.js(`(() => { const q = document.querySelector('#remindBody [data-r="${k}"]'); if (q.checked !== ${on}) { q.checked = ${on}; q.dispatchEvent(new Event('change', { bubbles: true })); } })()`);
+  const hhmm = d => String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  await toggle('quiet', false);
+  await A.click('#remindBody [data-at="168"]');
+  await A.setVal('#remindBody [data-r="summaryTime"]', hhmm(new Date(Date.now() - 60000)));
+  // Something big due tomorrow, to trigger a high-priority warning.
+  await A.js(`document.querySelector('.nav [data-tab="semester"]').click()`);
+  await A.click('#addRow'); await sleep(100);
+  await A.js(`(() => { const d = new Date(); d.setDate(d.getDate() + 1); const k = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); const tr = [...document.querySelectorAll('#rows tr[data-id]')].find(t => t.querySelector('[data-k="title"]').value === 'New deliverable'); const s = (k, v) => { const i = tr.querySelector('[data-k="' + k + '"]'); i.value = v; i.dispatchEvent(new Event('change', { bubbles: true })); }; s('weight', '25'); s('hours', '8'); s('title', 'Urgent essay'); s('date', k); })()`);
+  await A.js(`document.querySelector('.nav [data-tab="today"]').click()`); await sleep(300);
+  const check1 = async () => { await A.js(`window.__notes = []; document.dispatchEvent(new Event('ssync:remind-check')); 1`); return A.js(`window.__notes`); };
+  const n1 = await check1();
+  check('deadline reminders go out at the chosen intervals', n1.some(n => /Big thing/.test(n) && /Due in/.test(n)), n1);
+  check('the morning summary goes out once', n1.some(n => /^Your day/.test(n)), n1);
+  check('high-priority work gets a warning', n1.some(n => /^High priority: Urgent essay/.test(n)), n1);
+  check('nothing is sent twice', (await check1()).length === 0);
+  await A.js(`localStorage.removeItem('ssync-notified-v2')`);
+  await toggle('quiet', true);
+  await A.setVal('#remindBody [data-r="quietStart"]', hhmm(new Date(Date.now() - 60000)));
+  await A.setVal('#remindBody [data-r="quietEnd"]', hhmm(new Date(Date.now() + 3600000)));
+  check('quiet hours hold reminders back', (await check1()).length === 0);
+  await toggle('quiet', false);
+  await A.click('#remindBody [data-pause="60"]');
+  check('pausing holds reminders back', (await check1()).length === 0);
+  await A.click('#remindBody [data-pause="0"]');
+  check('resuming sends what’s waiting', (await check1()).length > 0);
+  await sleep(600);
+  check('the menu-bar/tray companion gets today’s summary', traySummary && traySummary.top.length === 3 && traySummary.due.length > 0, traySummary);
+
   console.log('\n# Search and keyboard');
   await A.key('k', { meta: true, ctrl: process.platform !== 'darwin' });
   check('Ctrl/⌘ K opens search', await A.until(`!!document.querySelector('dialog.search-dlg[open]')`, 2000));
@@ -237,8 +277,8 @@ async function phaseLocal(A) {
   check('search finds deliverables across courses', res.some(r => /Midterm/i.test(r)), res);
   await A.js(`document.getElementById('qIn').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))`); await sleep(400);
   check('opening a result jumps to its row', await A.js(`!document.querySelector('dialog.search-dlg[open]') && !!document.querySelector('#rows tr.flash')`));
-  await A.key('3', { alt: true, code: 'Digit3' }); await sleep(200);
-  check('Alt+3 switches to Grades', (await A.js(`document.querySelector('.nav .on').textContent`)) === 'Grades');
+  await A.key('4', { alt: true, code: 'Digit4' }); await sleep(200);
+  check('Alt+4 switches to Grades', (await A.js(`document.querySelector('.nav .on').textContent`)) === 'Grades');
   await A.key('?'); await sleep(200);
   check('? lists the shortcuts', await A.js(`!!document.querySelector('dialog.keys-dlg[open]')`));
   await A.js(`document.querySelector('dialog.keys-dlg').close()`);
@@ -274,6 +314,7 @@ async function phaseSync(A) {
   await setTitle(A, 0, 'Edited on A'); await A.flushed();
   B.win.focus(); await B.js(`document.dispatchEvent(new Event('visibilitychange'))`); await sleep(800);
   check('an edit on A shows up on B', (await titleOf(B, 0)) === 'Edited on A', await titleOf(B, 0));
+  check('just opening the account never counts as an edit', ![...cloud.values()].some(b => b.json && b.json.includes('"title":"Lab Report 2"')) && !(await B.js(`(localStorage.getItem('ssync-snapshots-v1') || '').includes('two devices')`)));
 
   console.log('\n# The same course edited on both');
   await setTitle(A, 1, 'Second edit on A'); await A.flushed();

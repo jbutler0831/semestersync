@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, dialog, Menu, safeStorage, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Menu, Tray, nativeImage, safeStorage, nativeTheme } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const Anthropic = require('@anthropic-ai/sdk');
@@ -200,7 +200,7 @@ cloud.register(ipcMain);
 /* ---------- Settings IPC ---------- */
 ipcMain.handle('settings:get', async () => {
   const s = await readSettings();
-  return { hasKey: !!(await getApiKey()), keyFromEnv: !s.apiKey && !!process.env.ANTHROPIC_API_KEY, reminders: s.reminders !== false, remindLead: ['day', 'both', 'hours'].includes(s.remindLead) ? s.remindLead : 'day', canEncrypt: safeStorage.isEncryptionAvailable() };
+  return { hasKey: !!(await getApiKey()), keyFromEnv: !s.apiKey && !!process.env.ANTHROPIC_API_KEY, reminders: s.reminders !== false, keepInTray: s.keepInTray !== false, canEncrypt: safeStorage.isEncryptionAvailable() };
 });
 ipcMain.handle('settings:set', async (_e, patch) => {
   const s = await readSettings();
@@ -211,7 +211,7 @@ ipcMain.handle('settings:set', async (_e, patch) => {
     else s.apiKey = safeStorage.encryptString(key).toString('base64');
   }
   if (typeof patch.reminders === 'boolean') s.reminders = patch.reminders;
-  if (['day', 'both', 'hours'].includes(patch.remindLead)) s.remindLead = patch.remindLead;
+  if (typeof patch.keepInTray === 'boolean') { s.keepInTray = patch.keepInTray; keepInTray = patch.keepInTray; }
   await writeSettings(s);
   return { ok: true };
 });
@@ -301,6 +301,61 @@ ipcMain.handle('source:open', async (_e, cid) => {
 });
 ipcMain.handle('source:clear', async () => { await fs.rm(path.join(app.getPath('userData'), 'Sources'), { recursive: true, force: true }); return { ok: true }; });
 
+/* ---------- Menu-bar / system-tray companion ---------- */
+// The page sends a summary of today; the tray shows it as a menu, and on the Mac the menu bar
+// shows how many things are due today. Closing the window hides it, so reminders keep coming.
+let tray = null, quitting = false, keepInTray = true, traySummary = null, trayTipShown = false;
+app.on('before-quit', () => { quitting = true; });
+function showWindow(then) {
+  if (!win || win.isDestroyed()) createWindow();
+  if (win.isMinimized()) win.restore();
+  win.show(); win.focus();
+  if (then) win.webContents.send(then.channel, then.arg);
+}
+const clip = (v, n) => String(v ?? '').replace(/[\u0000-\u001f]/g, ' ').slice(0, n);
+function buildTrayMenu() {
+  const s = traySummary;
+  const head = (label) => ({ label, enabled: false });
+  const items = [];
+  if (s) {
+    items.push(head(`SemesterSync · ${clip(s.date, 30)}`), { type: 'separator' });
+    items.push(head(s.classes.length ? 'Classes still to come today' : 'No more classes today'));
+    for (const c of s.classes) items.push({ label: '   ' + clip(c.label, 60), click: () => showWindow({ channel: 'menu:open-today' }) });
+    items.push({ type: 'separator' }, head(s.top.length ? 'Top priorities' : 'Nothing pressing'));
+    s.top.forEach((t, i) => items.push({ label: `   ${i + 1}. ${clip(t.label, 60)}`, click: () => showWindow({ channel: 'menu:open-item', arg: t.iid }) }));
+    if (s.due.length) { items.push({ type: 'separator' }, head('Due next')); for (const d of s.due) items.push({ label: '   ' + clip(d.label, 64), click: () => showWindow({ channel: 'menu:open-item', arg: d.iid }) }); }
+    if (s.overdue) items.push({ type: 'separator' }, { label: `⚠ ${s.overdue} overdue: open the plan`, click: () => showWindow({ channel: 'menu:tab-2' }) });
+    items.push({ type: 'separator' });
+  }
+  items.push({ label: 'Open Today', click: () => showWindow({ channel: 'menu:open-today' }) });
+  if (s && s.paused) items.push({ label: 'Resume reminders', click: () => showWindow({ channel: 'menu:snooze-all', arg: '0' }) });
+  else items.push({ label: 'Pause reminders', submenu: [
+    { label: 'For 1 hour', click: () => win && win.webContents.send('menu:snooze-all', '60') },
+    { label: 'Until tomorrow', click: () => win && win.webContents.send('menu:snooze-all', 'tomorrow') },
+  ] });
+  items.push({ type: 'separator' }, { label: 'Quit SemesterSync', click: () => { quitting = true; app.quit(); } });
+  return Menu.buildFromTemplate(items);
+}
+function createTray() {
+  if (tray || process.env.SEMESTERSYNC_SMOKE) return;
+  const icon = nativeImage.createFromPath(path.join(__dirname, 'assets', isMac ? 'trayTemplate.png' : 'tray.png'));
+  if (isMac) icon.setTemplateImage(true);
+  tray = new Tray(icon);
+  tray.setToolTip('SemesterSync');
+  tray.setContextMenu(buildTrayMenu());
+  if (!isMac) tray.on('click', () => showWindow({ channel: 'menu:open-today' })); // Windows: left-click opens, right-click shows the menu
+}
+ipcMain.on('tray:update', (_e, s) => {
+  if (!s || typeof s !== 'object') return;
+  const list = (a, n) => (Array.isArray(a) ? a : []).slice(0, n).map(x => ({ label: clip(x && x.label, 80), iid: clip(x && x.iid, 60) }));
+  traySummary = { date: clip(s.date, 30), badge: clip(s.badge, 12), classes: list(s.classes, 5), top: list(s.top, 3), due: list(s.due, 5), overdue: Math.max(0, Math.min(99, +s.overdue || 0)), paused: !!s.paused };
+  if (!tray) return;
+  tray.setContextMenu(buildTrayMenu());
+  if (isMac) tray.setTitle(traySummary.badge ? ' ' + traySummary.badge : '');
+  tray.setToolTip(`SemesterSync${traySummary.badge ? ` · ${traySummary.badge} today` : ''}`);
+});
+ipcMain.on('app:show', () => showWindow());
+
 /* ---------- Window ---------- */
 function createWindow() {
   win = new BrowserWindow({
@@ -319,7 +374,12 @@ function createWindow() {
       spellcheck: true,
     },
   });
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => { if (!process.argv.includes('--hidden')) win.show(); });
+  win.on('close', e => {
+    if (quitting || !tray || !keepInTray) return;
+    e.preventDefault(); win.hide(); // keeps reminders running; the tray or Dock brings it back
+    if (!isMac && !trayTipShown && tray.displayBalloon) { trayTipShown = true; tray.displayBalloon({ title: 'SemesterSync is still running', content: 'Reminders keep coming. Find it in the system tray, or quit it there.' }); }
+  });
   if (process.env.SEMESTERSYNC_SMOKE) smokeTest(win, process.env.SEMESTERSYNC_SMOKE);
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
@@ -388,7 +448,7 @@ function buildMenu() {
     {
       label: 'View',
       submenu: [
-        ...['Semester', 'Plan', 'Grades', 'Study', 'Coach', 'Rooms', 'Insights'].map((label, i) => ({ label, accelerator: `CmdOrCtrl+${i + 1}`, click: () => send('menu:tab-' + i) })),
+        ...['Today', 'Semester', 'Plan', 'Grades', 'Study', 'Coach', 'Rooms', 'Insights'].map((label, i) => ({ label, accelerator: `CmdOrCtrl+${i + 1}`, click: () => send('menu:tab-' + i) })),
         { label: 'Search…', accelerator: 'CmdOrCtrl+K', click: () => send('menu:search') },
         { type: 'separator' },
         { label: 'Toggle Light/Dark', accelerator: 'CmdOrCtrl+Shift+L', click: () => send('menu:theme') },
@@ -418,12 +478,14 @@ function buildMenu() {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+  app.on('second-instance', () => showWindow());
   app.whenReady().then(() => {
     if (process.platform === 'win32') app.setAppUserModelId('com.syllabussync.desktop'); // needed for Windows notifications
     buildMenu();
+    readSettings().then(s => { keepInTray = s.keepInTray !== false; });
     createWindow();
-    app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+    createTray();
+    app.on('activate', () => showWindow());
   });
   app.on('window-all-closed', () => { if (!isMac) app.quit(); });
 }

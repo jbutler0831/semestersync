@@ -1003,7 +1003,7 @@ const HERE = window.desktop ? 'on this computer' : 'in this browser';
 const store = { mode: 'none', col: null, base: new Map(), timer: null, status: 'sample', busy: false, uid: null, who: '', signedOut: false, lastOk: null, fails: 0, retryAt: 0, dirtySince: 0, loaded: false, problem: '' };
 const STORE_KEY = 'ssync-courses-v1';
 const CACHE_KEY = 'ssync-account-cache-v1';
-const serialize = c => JSON.stringify({ id: c.id, code: c.code, title: c.title, text: c.text, categories: c.categories, items: c.items, color: c.color, parser: c.parser, order: c.order, credits: c.credits, target: c.target, override: c.override, sample: c.sample || undefined, source: c.source, review: c.review });
+const serialize = c => JSON.stringify({ id: c.id, code: c.code, title: c.title, text: c.text, categories: c.categories, items: c.items, color: c.color, parser: c.parser, order: c.order, credits: c.credits, target: c.target, override: c.override, sample: c.sample || undefined, source: c.source, review: c.review, meets: c.meets });
 function localDocs() {
   const m = new Map();
   for (const c of state.courses) m.set('course-' + c.id, serialize(c));
@@ -1043,7 +1043,7 @@ function writeCache(docs) {
   try { localStorage.setItem(CACHE_KEY, JSON.stringify({ uid: store.uid, docs: [...docs], base: [...store.base], dirtySince: store.dirtySince })); } catch (_) { /* full: the account still has the data */ }
 }
 function readCache() {
-  try { const c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null'); return c && c.uid === store.uid ? { docs: new Map(c.docs), base: new Map(c.base), dirtySince: +c.dirtySince || 0 } : null; } catch (_) { return null; }
+  try { const c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null'); return c && c.uid === store.uid ? { docs: new Map(c.docs), base: new Map(c.base.map(([k, v]) => [k, typeof v === 'string' ? { r: v, l: v } : v])), dirtySince: +c.dirtySince || 0 } : null; } catch (_) { return null; }
 }
 async function readRemote() {
   const snap = await store.col.get();
@@ -1056,14 +1056,16 @@ async function readRemote() {
   }
   return { docs: m, meta };
 }
-// Three-way merge of this device's documents against the account, using the last synced copy as the base.
+// Three-way merge of this device's documents against the account. The base remembers, for each document,
+// what the account held at the last sync (r) and what this device's copy looked like then (l). They can
+// differ in harmless ways (loading tidies a document up), so each side is only compared with its own base.
 function reconcile(remote, mine) {
   const push = [], drop = [], adopt = new Map(), lost = [];
   const ids = new Set([...store.base.keys(), ...remote.keys(), ...mine.keys()]);
   for (const id of ids) {
-    const b = store.base.get(id), r = remote.has(id) ? remote.get(id).json : undefined, l = mine.get(id);
-    if (l === r) { if (r === undefined) store.base.delete(id); else store.base.set(id, r); continue; }
-    const localChanged = l !== b, remoteChanged = r !== b;
+    const b = store.base.get(id) || {}, r = remote.has(id) ? remote.get(id).json : undefined, l = mine.get(id);
+    if (l === r) { if (r === undefined) store.base.delete(id); else store.base.set(id, { r, l }); continue; }
+    const localChanged = l !== b.l, remoteChanged = r !== b.r;
     if (localChanged && !remoteChanged) { if (l === undefined) drop.push(id); else push.push(id); continue; }
     if (remoteChanged && !localChanged) { adopt.set(id, r); continue; }
     // Both sides changed. A deletion never beats an edit; otherwise the newer edit wins.
@@ -1105,10 +1107,11 @@ async function syncNow(quiet) {
     const plan = reconcile(remote.docs, mine);
     if (!remote.meta) { await store.col.doc('meta').set({ v: 1 }); }
     const at = Date.now();
-    for (const id of plan.push) { const json = mine.get(id); await store.col.doc(id).set({ json, at }); store.base.set(id, json); }
+    for (const id of plan.push) { const json = mine.get(id); await store.col.doc(id).set({ json, at }); store.base.set(id, { r: json, l: json }); }
     for (const id of plan.drop) { await store.col.doc(id).delete(); store.base.delete(id); }
-    for (const [id, json] of plan.adopt) { if (json === undefined) store.base.delete(id); else store.base.set(id, json); }
     applyDocs(plan.adopt);
+    const after = localDocs();
+    for (const [id, json] of plan.adopt) { if (json === undefined) store.base.delete(id); else store.base.set(id, { r: json, l: after.get(id) }); }
     for (const [id, json] of plan.lost) {
       let name = 'a setting';
       try { const v = JSON.parse(json); name = id.startsWith('course-') ? v.code : id.startsWith('deck-') ? `study set “${v.name}”` : 'your planner and GPA settings'; } catch (_) {}
@@ -1206,6 +1209,7 @@ function cleanCourse(x) {
   if (typeof x.override === 'string' && SCALE.some(s => s[1] === x.override)) c.override = x.override;
   if (x.sample || SAMPLES.includes(x.text)) c.sample = true;
   if (x.source && typeof x.source === 'object') c.source = { name: clip(x.source.name, 120), kind: clip(x.source.kind, 12), added: clip(x.source.added, 10), kept: !!x.source.kept };
+  if (Array.isArray(x.meets)) c.meets = x.meets.slice(0, 6).filter(m => m && Array.isArray(m.days) && /^\d{2}:\d{2}$/.test(m.start) && /^\d{2}:\d{2}$/.test(m.end)).map(m => ({ days: [...new Set(m.days.map(Number).filter(d => d >= 0 && d <= 6))].sort(), start: m.start, end: m.end, where: clip(m.where, 40), kind: ['Class', 'Lab', 'Discussion'].includes(m.kind) ? m.kind : 'Class' }));
   if (x.review && typeof x.review === 'object') c.review = { pending: !!x.review.pending, at: num(x.review.at, 0, 1e15, 0) };
   return c;
 }
@@ -1268,7 +1272,7 @@ async function initStore() {
             loaded = st.courses; loadedExtras = st.ex;
             store.pendingMerge = true;
           } else {
-            for (const [k, v] of remote.docs) store.base.set(k, v.json);
+            for (const [k, v] of remote.docs) store.base.set(k, { r: v.json, l: undefined });
             const st = docsToState(new Map([...remote.docs].map(([k, v]) => [k, v.json])));
             loaded = st.courses; loadedExtras = st.ex;
           }
@@ -1298,6 +1302,7 @@ async function initStore() {
   if (!edited && loadedExtras.length) adoptExtras(loadedExtras);
   if (loaded && !edited) { adoptCourses(loaded); store.status = store.status === 'retry' ? 'retry' : 'saved'; }
   state.dirty = edited;
+  fillBase();
   store.loaded = true;
   if (edited) markDirty();
   else if (!loaded && store.status !== 'retry') store.status = store.mode === 'none' ? 'none' : 'sample';
@@ -1307,17 +1312,25 @@ async function initStore() {
   paintSaveStatus();
   if (store.problem) showProblem(store.problem);
   if (fresh && store.status !== 'retry') maybeOnboard();
+  setTimeout(() => { checkReminders(); pushTray(); }, 5000);
+}
+// After loading documents from the account, note what this device's copy of each looks like.
+function fillBase() {
+  if (store.mode !== 'db') return;
+  const now = localDocs();
+  for (const [k, v] of store.base) if (v.l === undefined) store.base.set(k, { r: v.r, l: now.get(k) });
 }
 // Signed in but the account couldn't be reached on a device with no cached copy: keep trying to load.
 async function retryLoad() {
   try {
     const remote = await readRemote();
     store.unloaded = false;
-    for (const [k, v] of remote.docs) store.base.set(k, v.json);
+    for (const [k, v] of remote.docs) store.base.set(k, { r: v.json, l: undefined });
     if (!state.dirty) {
       const st = docsToState(new Map([...remote.docs].map(([k, v]) => [k, v.json])));
       if (st.ex.length) adoptExtras(st.ex);
       if (st.courses.length) adoptCourses(st.courses);
+      fillBase();
       store.status = remote.meta ? 'saved' : 'sample'; store.lastOk = Date.now();
       writeCache(localDocs());
     } else {
@@ -1710,7 +1723,8 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', paintTheme
 
 /* ---------- Saved extras: planner hours, GPA inputs, review history, study sets ---------- */
 const EXTRAS_KEY = 'ssync-extras-v1';
-const EXTRAS_DEFAULT = () => ({ planner: { hours: [3, 3, 3, 3, 2, 1, 2], block: 1.5, snap: null, missed: null }, gpa: { prior: '', priorCredits: '', goal: '' }, review: { days: {} }, cal: { exported: {}, seq: {}, at: 0 }, lastExport: 0 });
+const EXTRAS_DEFAULT = () => ({ planner: { hours: [3, 3, 3, 3, 2, 1, 2], block: 1.5, snap: null, missed: null }, gpa: { prior: '', priorCredits: '', goal: '' }, review: { days: {} }, cal: { exported: {}, seq: {}, at: 0 }, lastExport: 0,
+  remind: { on: true, at: [24], summary: { on: true, time: '08:00' }, overdue: true, urgent: true, quiet: { on: true, start: '22:00', end: '07:30' }, snooze: {} } });
 const extras = EXTRAS_DEFAULT();
 function resetExtras() { const d = EXTRAS_DEFAULT(); for (const k of Object.keys(d)) extras[k] = d[k]; decks = []; }
 let decks = [];
@@ -1735,6 +1749,14 @@ function adoptExtras(list) {
         if (v.planner && v.planner.missed !== undefined) extras.planner.missed = v.planner.missed && isFinite(+v.planner.missed.h) ? v.planner.missed : null;
         if (v.cal && typeof v.cal === 'object') extras.cal = { exported: v.cal.exported && typeof v.cal.exported === 'object' ? v.cal.exported : {}, seq: v.cal.seq && typeof v.cal.seq === 'object' ? v.cal.seq : {}, at: +v.cal.at || 0 };
         if (+v.lastExport) extras.lastExport = +v.lastExport;
+        if (v.remind && typeof v.remind === 'object') {
+          const r = v.remind, R = extras.remind, hhmm = x => typeof x === 'string' && /^\d{2}:\d{2}$/.test(x);
+          for (const k of ['on', 'overdue', 'urgent']) if (typeof r[k] === 'boolean') R[k] = r[k];
+          if (Array.isArray(r.at)) R.at = r.at.map(Number).filter(h => REMIND_STAGES.some(s => s[0] === h));
+          if (r.summary) { if (typeof r.summary.on === 'boolean') R.summary.on = r.summary.on; if (hhmm(r.summary.time)) R.summary.time = r.summary.time; }
+          if (r.quiet) { if (typeof r.quiet.on === 'boolean') R.quiet.on = r.quiet.on; if (hhmm(r.quiet.start)) R.quiet.start = r.quiet.start; if (hhmm(r.quiet.end)) R.quiet.end = r.quiet.end; }
+          if (r.snooze && typeof r.snooze === 'object') R.snooze = Object.fromEntries(Object.entries(r.snooze).filter(([k, x]) => /^[\w.-]{1,60}$/.test(k) && +x > Date.now()).map(([k, x]) => [k, +x]));
+        }
       } else if (id.startsWith('deck-')) { const d = cleanDeck(v); if (d) decks.push(d); }
     } catch (_) { /* skip unreadable */ }
   }
@@ -1743,7 +1765,7 @@ function adoptExtras(list) {
 }
 
 /* ---------- Tabs ---------- */
-const TABS = ['semester', 'plan', 'grades', 'study', 'coach', 'rooms', 'insights'];
+const TABS = ['today', 'semester', 'plan', 'grades', 'study', 'coach', 'rooms', 'insights'];
 let tab = 'semester';
 function setTab(t) {
   if (!TABS.includes(t)) t = 'semester';
@@ -1757,10 +1779,10 @@ function setTab(t) {
 }
 document.addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b) { e.preventDefault(); setTab(b.dataset.tab); } });
 function renderTab() {
-  const fn = { plan: renderPlan, grades: renderGrades, study: renderStudy, coach: renderCoach, rooms: renderRooms, insights: renderInsights }[tab];
+  const fn = { today: renderToday, plan: renderPlan, grades: renderGrades, study: renderStudy, coach: renderCoach, rooms: renderRooms, insights: renderInsights }[tab];
   if (fn) fn();
 }
-function renderFeatures() { renderTab(); }
+function renderFeatures() { renderTab(); pushTray(); }
 const pendingItems = () => allItems().filter(i => !i.done);
 const remaining = it => Math.max(0, (+it.hours || 0) - (+it.spent || 0));
 const courseOpts = (sel) => state.courses.map(c => `<option value="${c.id}"${c.id === sel ? ' selected' : ''}>${esc(c.code)}${c.title ? ' · ' + esc(c.title.slice(0, 40)) : ''}</option>`).join('');
@@ -1834,7 +1856,7 @@ function priority(it, riskSet) {
   const s = parts.reduce((a, [v]) => a + v, 0) - 14;
   const why = parts.filter(([v]) => v > 0).sort((a, b) => b[0] - a[0]).map(([, t]) => t);
   if (!it.weight) why.push('not graded');
-  return [...(s >= 25 ? ['High', 'crit'] : s >= 8 ? ['Medium', 'warn'] : ['Low', '']), [...new Set(why)]];
+  return [...(s >= 25 ? ['High', 'crit'] : s >= 8 ? ['Medium', 'warn'] : ['Low', '']), [...new Set(why)], s];
 }
 // Days in the next three weeks with two or more big deliverables due.
 function clashes() {
@@ -3183,7 +3205,7 @@ const keysDlg = makeDialog('keys-dlg');
 function openKeys() {
   const rows = [
     [`${mod} K`, 'Search everything'], ['/', 'Search (when not typing)'],
-    [window.desktop ? `${mod} 1 – 7` : 'Alt 1 – 7', 'Switch tabs'],
+    [window.desktop ? `${mod} 1 – 8` : 'Alt 1 – 8', 'Switch tabs'],
     [`${mod} Enter`, 'Parse the syllabus you’re editing'],
     ['Space · 1 – 4', 'Show answer · rate a flashcard'],
     ...(window.desktop ? [[`${mod} N`, 'New course'], [`${mod} O`, 'Open a syllabus file'], [`${mod} E`, 'Export to calendar'], [`${mod} ⇧ B`, 'Export a backup'], [`${mod} ,`, 'Settings']] : []),
@@ -3195,7 +3217,7 @@ function openKeys() {
 document.addEventListener('keydown', e => {
   const typing = e.target.closest && e.target.closest('input, textarea, select, [contenteditable]');
   if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); openSearch(); return; }
-  if (e.altKey && !e.metaKey && !e.ctrlKey && /^Digit[1-7]$/.test(e.code)) { e.preventDefault(); setTab(TABS[+e.code.slice(5) - 1]); return; }
+  if (e.altKey && !e.metaKey && !e.ctrlKey && /^Digit[1-8]$/.test(e.code)) { e.preventDefault(); setTab(TABS[+e.code.slice(5) - 1]); return; }
   if (typing || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
   if (e.key === '/') { e.preventDefault(); openSearch(); }
   else if (e.key === '?') { e.preventDefault(); openKeys(); }
@@ -3226,6 +3248,332 @@ $('tableShow').addEventListener('change', e => { state.show = e.target.value; re
 $('rows').addEventListener('click', e => { if (e.target.closest('#clearSearch')) { state.q = ''; state.show = 'all'; $('tableSearch').value = ''; $('tableShow').value = 'all'; renderTable(); } });
 $('syncNote').addEventListener('click', e => { const b = e.target.closest('[data-review]'); if (b) { selectCourse(b.dataset.review); $('review').scrollIntoView({ block: 'start' }); } });
 
+/* ---------- Class times, read from the syllabus ---------- */
+// "Tue/Thu 10:30–11:45 AM · Hallam Hall 204", "MWF 1:00-1:50 pm, Room 140"
+const DOW_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+const DOW_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const DAY_WORD_RE = /\b(mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?/gi;
+const T_RANGE_RE = /(\d{1,2})(?::(\d{2}))?\s*([ap])?\.?m?\.?\s*[–—-]\s*(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?\b/i;
+const to24 = (h, m, ap) => `${String(+h % 12 + (/p/i.test(ap) ? 12 : 0)).padStart(2, '0')}:${m || '00'}`;
+function parseDays(s) {
+  const out = new Set();
+  for (const m of s.matchAll(DAY_WORD_RE)) out.add(DOW_KEYS.indexOf(m[1].toLowerCase()));
+  if (!out.size) {
+    // Compact forms are case-sensitive: MWF, TR, TTh, MW
+    for (const tok of s.match(/\b(?:Th|Tu|Sa|Su|M|T|W|R|F)+\b/g) || []) {
+      const parts = tok.match(/Th|Tu|Sa|Su|M|T|W|R|F/g);
+      if (parts.length < 2) continue;
+      parts.forEach(p => out.add({ M: 1, T: 2, Tu: 2, W: 3, R: 4, Th: 4, F: 5, Sa: 6, Su: 0 }[p]));
+    }
+  }
+  return [...out].sort();
+}
+function parseMeets(text) {
+  const meets = [];
+  for (const raw of text.split('\n').slice(0, 80)) {
+    const line = raw.trim();
+    if (!line || /office hours|exam|\bdue\b|quiz|midterm|no class|deadline|\breport\b/i.test(line)) continue;
+    const t = line.match(T_RANGE_RE); if (!t) continue;
+    const before = line.slice(Math.max(0, t.index - 40), t.index), after = line.slice(t.index + t[0].length);
+    let days = parseDays(before); if (!days.length) days = parseDays(after.slice(0, 30));
+    if (!days.length) continue;
+    const end = to24(t[4], t[5], t[6]);
+    let start = to24(t[1], t[2], t[3] || t[6]);
+    if (!t[3] && start >= end) start = to24(t[1], t[2], /p/i.test(t[6]) ? 'a' : 'p');
+    if (start >= end) continue;
+    let where = after.replace(/^[\s·|,;:–—-]+/, '').split(/\s[·|]\s|;|,\s(?=[A-Z][a-z]+:)/)[0].replace(DAY_WORD_RE, '').trim();
+    if (where.length > 40 || /office|instructor|@|http|\d{1,2}:\d{2}/i.test(where)) where = '';
+    meets.push({ days, start, end, where, kind: /\blab\b/i.test(line) ? 'Lab' : /discussion|recitation|section/i.test(line) ? 'Discussion' : 'Class' });
+    if (meets.length >= 4) break;
+  }
+  return meets;
+}
+// Term dates ("Term: August 24 – December 11, 2026") and days with no class.
+function parseCalendar(text) {
+  const year = detectYear(text), out = { start: null, end: null, off: new Set() };
+  const tm = text.match(new RegExp(`(?:term|semester|session|classes run|dates)[^\\n]{0,20}?${MONTH_SRC}[^\\n]{0,8}?[–—-]\\s*${MONTH_SRC}`, 'i'));
+  if (tm) {
+    const s = new Date(year, MONTH[tm[1].slice(0, 3).toLowerCase()], +tm[2]), e = new Date(year, MONTH[tm[3].slice(0, 3).toLowerCase()], +tm[4]);
+    if (e > s) { out.start = iso(s); out.end = iso(e); }
+  }
+  for (const line of text.split('\n')) {
+    if (!/no class|no classes|holiday|\bbreak\b|recess|university closed/i.test(line)) continue;
+    for (const m of line.matchAll(new RegExp(`${MONTH_SRC}(?:\\s*[–—-]\\s*(\\d{1,2})\\b)?`, 'gi'))) {
+      const mo = MONTH[m[1].slice(0, 3).toLowerCase()], a = +m[2], b = m[3] ? +m[3] : a;
+      for (let d = a; d <= b && d - a < 14; d++) out.off.add(iso(new Date(year, mo, d)));
+    }
+  }
+  return out;
+}
+const calCache = new WeakMap();
+function courseCal(c) {
+  let x = calCache.get(c);
+  if (!x || x.text !== c.text) { x = { text: c.text, cal: parseCalendar(c.text), meets: parseMeets(c.text) }; calCache.set(c, x); }
+  return x;
+}
+const meetsOf = c => Array.isArray(c.meets) ? c.meets : courseCal(c).meets;
+function classesOn(d) {
+  const k = iso(d), dow = d.getDay(), out = [], off = [];
+  for (const c of state.courses) {
+    const { cal } = courseCal(c), ms = meetsOf(c);
+    if (!ms.length) continue;
+    const first = c.items.length ? c.items.map(i => i.date).sort()[0] : null, last = c.items.length ? c.items.map(i => i.date).sort().pop() : null;
+    const start = cal.start || (first && iso(addDays(fromIso(first), -21))), end = cal.end || last;
+    if (start && k < start || end && k > end) continue;
+    if (cal.off.has(k)) { if (ms.some(m => m.days.includes(dow))) off.push(c); continue; }
+    for (const m of ms) if (m.days.includes(dow)) out.push({ c, m });
+  }
+  return { list: out.sort((a, b) => a.m.start.localeCompare(b.m.start)), off };
+}
+
+/* ---------- Today ---------- */
+const at = (d, hhmm) => { const [h, m] = hhmm.split(':').map(Number); return new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m); };
+const dueAt = it => at(dueDate(it), it.time || '23:59');
+function untilText(ms) {
+  const m = Math.round(ms / 60000);
+  if (m < 1) return 'now';
+  if (m < 60) return `in ${m} min`;
+  if (m < 60 * 24) return `in ${Math.round(m / 60)} h`;
+  const days = Math.round(m / 1440);
+  return days === 1 ? 'tomorrow' : `in ${days} days`;
+}
+const ranked = () => {
+  const plan = buildPlan(), risk = new Set(plan.risk.map(r => r.it));
+  const list = allItems().filter(i => !i.done && dueDate(i) >= addDays(TODAY, -7) && !i.backfilled)
+    .map(i => ({ it: i, p: priority(i, risk), risk: risk.has(i) }))
+    .sort((a, b) => b.p[3] - a.p[3]);
+  return { plan, risk, list };
+};
+function todayData() {
+  const now = new Date(), r = ranked();
+  const cls = classesOn(TODAY);
+  const due = allItems().filter(i => !i.done && dueAt(i) >= now).sort((a, b) => dueAt(a) - dueAt(b));
+  const overdue = allItems().filter(i => !i.done && !i.backfilled && dueAt(i) < now && dueDate(i) >= addDays(TODAY, -7));
+  return { now, classes: cls.list, off: cls.off, top: r.list.slice(0, 3), due, overdue, plan: r.plan, risk: r.risk, dueToday: due.filter(i => i.date === iso(TODAY)) };
+}
+const snoozedUntil = iid => Math.max(+(extras.remind.snooze[iid] || 0), +(extras.remind.snooze.all || 0));
+function renderToday() {
+  const T = todayData(), now = T.now, hr = now.getHours();
+  $('todayTitle').textContent = hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
+  const bits = [`${T.classes.length || 'No'} class${T.classes.length === 1 ? '' : 'es'}`, `${T.dueToday.length || 'nothing'} due today`];
+  $('todaySub').textContent = `${now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} · ${bits.join(' · ')}`;
+  // Alerts: overdue, at risk, yesterday's missed work
+  const alerts = [];
+  if (T.overdue.length) alerts.push(`<div class="banner"><div style="flex:1"><b>${T.overdue.length} deadline${T.overdue.length > 1 ? 's' : ''} passed without being ticked off</b>${T.overdue.slice(0, 4).map(i => `${esc(itemCourse(i).code)} ${esc(i.title)}`).join(', ')}. Tick ${T.overdue.length > 1 ? 'them' : 'it'} off if you handed ${T.overdue.length > 1 ? 'them' : 'it'} in, or ask about a late submission.</div><button type="button" class="btn sm" data-goto="plan">Open plan</button></div>`);
+  if (T.risk.size) alerts.push(`<div class="banner warn"><div style="flex:1"><b>${T.risk.size} deadline${T.risk.size > 1 ? 's don’t' : ' doesn’t'} fit in your study hours</b>Start the top priorities below today, or add hours on the Plan tab.</div><button type="button" class="btn sm" data-goto="plan">Open plan</button></div>`);
+  $('todayAlerts').innerHTML = alerts.join('');
+  // Top 3
+  const ok = !!window.desktop;
+  $('todayTop').innerHTML = T.top.length ? T.top.map(({ it, p, risk }, n) => {
+    const sn = snoozedUntil(it.id) > Date.now();
+    return `<div class="dl top" data-iid="${it.id}">
+      <span class="rank">${n + 1}</span>
+      <div class="t">${esc(it.title)}<small>${tagHtml(itemCourse(it))} · due ${dueLabel(it)}${it.weight ? ` · ${it.weight}%` : ''} · ${fmtH(remaining(it))} h left</small></div>
+      <div class="acts"><button type="button" class="pri ${p[1]}" data-why aria-expanded="false" title="Why?">${risk ? 'At risk' : p[0]}</button><button type="button" class="btn sm" data-log="1" title="Log an hour of work">+1 h</button><input type="checkbox" data-done aria-label="Mark ${esc(it.title)} done" title="Done"></div>
+      <div class="why-line" hidden>${esc(risk ? 'At risk' : p[0])} because it’s ${esc(p[2].join(', '))}.${ok ? ` <span class="snz">${sn ? `Reminders snoozed until ${esc(new Date(snoozedUntil(it.id)).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' }))}. <button type="button" class="linkish" data-snooze="0">Unsnooze</button>` : `Snooze its reminders: <button type="button" class="linkish" data-snooze="60">1 hour</button> · <button type="button" class="linkish" data-snooze="tomorrow">until tomorrow</button>`}</span>` : ''}</div>
+    </div>`;
+  }).join('') : `<div class="empty">${state.courses.length ? 'Nothing pressing. Enjoy it, or get ahead on something from the plan.' : 'Add a course on the Semester tab to see your priorities here.'}</div>`;
+  // Classes
+  const missing = state.courses.filter(c => !meetsOf(c).length);
+  $('todayClasses').innerHTML = (T.classes.length ? T.classes.map(({ c, m }) => {
+    const s = at(TODAY, m.start), e = at(TODAY, m.end);
+    const st = now >= e ? ['done', 'Done'] : now >= s ? ['now', 'Now'] : ['next', untilText(s - now)];
+    return `<div class="cls ${st[0]}"><span class="tm">${fmtTime(m.start)}<small>${fmtTime(m.end)}</small></span><span class="bar" style="background:${colorOf(c)}"></span><span class="t"><b>${esc(c.code)}${m.kind !== 'Class' ? ` ${esc(m.kind)}` : ''}</b><small>${esc(m.where || c.title || '')}</small></span><span class="st">${st[1]}</span></div>`;
+  }).join('') : `<div class="empty">${T.off.length ? `No class today in ${T.off.map(c => esc(c.code)).join(', ')} (holiday or break).` : 'No classes today.'}</div>`)
+    + (missing.length ? `<p class="note" style="padding:8px 18px 0">No class times found for ${missing.map(c => esc(c.code)).join(', ')}. Add them under <b>Class times</b>.</p>` : '');
+  renderMeetsEditor();
+  // Due next
+  $('todayDue').innerHTML = T.due.length ? T.due.slice(0, 6).map(i => `<div class="dl due" data-iid="${i.id}"><input type="checkbox" data-done aria-label="Mark ${esc(i.title)} done"><div class="t">${esc(i.title)}<small>${tagHtml(itemCourse(i))} · ${dueLabel(i)}${i.weight ? ` · ${i.weight}%` : ''}</small></div><div class="acts"><span class="when${dueAt(i) - now < 86400000 ? ' soon' : ''}">${untilText(dueAt(i) - now)}</span></div></div>`).join('') : '<div class="empty">Nothing coming up.</div>';
+  // Today's plan
+  const blocks = (T.plan.days.get(iso(TODAY)) || []).sort((a, b) => a.it.date.localeCompare(b.it.date));
+  $('todayPlan').innerHTML = blocks.length ? blocks.map(x => `<div class="blk" data-iid="${x.it.id}"><span class="bar" style="background:${colorOf(itemCourse(x.it))}"></span><span class="bt">${esc(x.it.title)}<small>${esc(itemCourse(x.it).code)} · ${fmtH(x.h)} h · due ${fmtDay(dueDate(x.it))}</small></span><span class="bacts"><button type="button" data-log="${x.h}" title="Log this session as done">Did it</button></span></div>`).join('') : `<div class="empty">${extras.planner.hours[(TODAY.getDay() + 6) % 7] ? 'Nothing booked today.' : 'Today is a day off in your study hours.'}</div>`;
+  renderRemindPanel();
+}
+function renderMeetsEditor() {
+  const box = $('meetsEdit');
+  if (box.contains(document.activeElement)) return;
+  box.innerHTML = state.courses.length ? state.courses.map(c => {
+    const ms = meetsOf(c);
+    return `<div class="meets" data-cid="${c.id}"><div class="mh">${tagHtml(c)}${Array.isArray(c.meets) ? '' : ms.length ? '<small>from the syllabus</small>' : '<small>none found</small>'}</div>
+      ${ms.map((m, n) => `<div class="mrow" data-n="${n}">
+        <div class="days" role="group" aria-label="Days">${[1, 2, 3, 4, 5, 6, 0].map(d => `<label><input type="checkbox" data-day="${d}"${m.days.includes(d) ? ' checked' : ''}><span>${DOW_SHORT[d][0]}${d === 4 || d === 2 ? DOW_SHORT[d][1] : ''}</span></label>`).join('')}</div>
+        <input class="inline-in" type="time" value="${m.start}" data-mk="start" aria-label="Starts">–<input class="inline-in" type="time" value="${m.end}" data-mk="end" aria-label="Ends">
+        <input class="inline-in where" type="text" maxlength="40" value="${esc(m.where)}" placeholder="Room" data-mk="where" aria-label="Room">
+        <button type="button" class="icon-btn" data-mdel aria-label="Remove this class time"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></div>`).join('')}
+      <button type="button" class="btn sm ghost" data-madd>+ Add a class time</button></div>`;
+  }).join('') : '<p class="note">Add a course first.</p>';
+}
+function editMeets(e) {
+  const host = e.target.closest('[data-cid]'); if (!host) return;
+  const c = courseById(host.dataset.cid); if (!c) return;
+  const ms = meetsOf(c).map(m => ({ ...m, days: [...m.days] }));
+  const row = e.target.closest('[data-n]'), m = row ? ms[+row.dataset.n] : null;
+  if (e.type === 'click') {
+    if (e.target.closest('[data-madd]')) ms.push({ days: [1, 3], start: '10:00', end: '10:50', where: '', kind: 'Class' });
+    else if (e.target.closest('[data-mdel]')) ms.splice(+row.dataset.n, 1);
+    else return;
+  } else {
+    if (!m) return;
+    if (e.target.dataset.day != null) { const d = +e.target.dataset.day; m.days = e.target.checked ? [...new Set([...m.days, d])].sort() : m.days.filter(x => x !== d); }
+    else if (e.target.dataset.mk === 'where') m.where = e.target.value.trim().slice(0, 40);
+    else if (/^\d{2}:\d{2}$/.test(e.target.value)) m[e.target.dataset.mk] = e.target.value;
+    if (m.start >= m.end) { toast('A class has to end after it starts'); renderMeetsEditor(); return; }
+  }
+  c.meets = ms;
+  markDirty();
+  if (e.type === 'click') { renderMeetsEditor(); }
+  renderTodayKeepFocus();
+}
+function renderTodayKeepFocus() { const a = document.activeElement; renderToday(); if (a && a.isConnected) a.focus(); }
+$('meetsEdit').addEventListener('click', editMeets);
+$('meetsEdit').addEventListener('change', editMeets);
+for (const id of ['todayTop', 'todayDue', 'todayPlan']) $(id).addEventListener('click', e => {
+  const s = e.target.closest('[data-snooze]');
+  if (s) { const [, it] = findItem(s.closest('[data-iid]').dataset.iid); if (it) snooze(it.id, s.dataset.snooze); return; }
+  planClick(e);
+});
+$('todayAlerts').addEventListener('click', e => { const b = e.target.closest('[data-goto]'); if (b) setTab(b.dataset.goto); });
+
+/* ---------- Reminders ---------- */
+// Settings live with your data (so they follow you between computers); what was already sent is per device.
+const REMIND_STAGES = [[168, '1 week'], [72, '3 days'], [24, '1 day'], [6, '6 hours'], [2, '2 hours'], [1, '1 hour']];
+const NOTIFIED_KEY = 'ssync-notified-v2';
+const notifier = () => !!(window.desktop && 'Notification' in window);
+function tomorrowMorning() { const d = addDays(new Date(), 1); return +at(d, extras.remind.quiet.on ? extras.remind.quiet.end : extras.remind.summary.time); }
+function snooze(key, how) {
+  const until = how === '0' ? 0 : how === 'tomorrow' ? tomorrowMorning() : Date.now() + (+how || 60) * 60000;
+  if (until) extras.remind.snooze[key] = until; else delete extras.remind.snooze[key];
+  for (const [k, v] of Object.entries(extras.remind.snooze)) if (v < Date.now()) delete extras.remind.snooze[k];
+  markDirty(); renderTab(); pushTray();
+  toast(!until ? 'Reminders back on' : `${key === 'all' ? 'All reminders' : 'Reminders for this'} snoozed until ${new Date(until).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`);
+}
+function inQuiet(d) {
+  const q = extras.remind.quiet; if (!q.on) return false;
+  const t = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return q.start <= q.end ? t >= q.start && t < q.end : t >= q.start || t < q.end;
+}
+function readNotified() { try { return new Set(JSON.parse(localStorage.getItem(NOTIFIED_KEY) || '[]')); } catch (_) { return new Set(); } }
+function notify(title, body, iid, sent) {
+  try {
+    const n = new Notification(title, { body, silent: false });
+    n.onclick = () => { if (window.desktop.app) window.desktop.app.show(); if (iid) openItem(iid); else setTab('today'); };
+    sent.push(title);
+  } catch (_) { /* notifications unavailable */ }
+}
+// Runs every minute. Sends at most one notification per deadline per stage, never during quiet hours,
+// and catches up once quiet hours end with only the most recent stage still ahead.
+function checkReminders(force) {
+  const R = extras.remind, sent = [];
+  if (!store.loaded || !R.on || !notifier()) return sent;
+  const now = new Date(), nowMs = +now;
+  if (!force && (inQuiet(now) || +(R.snooze.all || 0) > nowMs)) return sent;
+  const done = readNotified(), today = iso(TODAY), mine = state.courses.filter(c => !c.sample);
+  const items = mine.flatMap(c => c.items).filter(i => !i.done && i.sync !== false);
+  const stages = [...R.at].sort((a, b) => b - a);
+  for (const it of items) {
+    const left = +dueAt(it) - nowMs;
+    if (left <= 0 || +(R.snooze[it.id] || 0) > nowMs) continue;
+    const hit = stages.filter(h => left <= h * 3600000);
+    if (!hit.length) continue;
+    const h = hit[hit.length - 1], key = `${it.id}|${it.date}|${it.time}|${h}`;
+    if (done.has(key)) continue;
+    hit.forEach(x => done.add(`${it.id}|${it.date}|${it.time}|${x}`));
+    if (sent.length < 4) notify(`${itemCourse(it).code}: ${it.title}`, `Due ${untilText(left)} (${dueLabel(it)})${it.weight ? ` · ${it.weight}% of your grade` : ''}${remaining(it) ? ` · about ${fmtH(remaining(it))} h of work left` : ''}`, it.id, sent);
+  }
+  const T = todayData();
+  const real = x => x.filter(i => !(itemCourse(i) || {}).sample);
+  // Morning summary: once a day, at the chosen time or the first check within 4 hours after it.
+  if (R.summary.on && !done.has('summary|' + today) && now >= at(TODAY, R.summary.time) && nowMs - +at(TODAY, R.summary.time) < 4 * 3600000) {
+    done.add('summary|' + today);
+    const top = T.top.filter(x => !(itemCourse(x.it) || {}).sample)[0];
+    const cls = T.classes.filter(x => !x.c.sample);
+    notify('Your day', [`${cls.length ? `${cls.length} class${cls.length > 1 ? 'es' : ''}, first at ${fmtTime(cls[0].m.start)}` : 'No classes'}`, `${real(T.dueToday).length || 'nothing'} due today`, top ? `top priority: ${top.it.title}` : ''].filter(Boolean).join(' · '), null, sent);
+  }
+  if (R.overdue && real(T.overdue).length && !done.has('overdue|' + today)) {
+    done.add('overdue|' + today);
+    const o = real(T.overdue);
+    notify(`${o.length} deadline${o.length > 1 ? 's' : ''} passed`, `${o.slice(0, 3).map(i => `${itemCourse(i).code} ${i.title}`).join(', ')}. Tick off what you handed in.`, null, sent);
+  }
+  if (R.urgent) {
+    for (const { it, p, risk } of T.top) {
+      if ((itemCourse(it) || {}).sample || !(risk || p[0] === 'High') || +dueAt(it) - nowMs > 48 * 3600000 || +(R.snooze[it.id] || 0) > nowMs) continue;
+      const key = `urgent|${it.id}|${today}`; if (done.has(key)) continue;
+      done.add(key);
+      notify(`High priority: ${it.title}`, `${itemCourse(it).code} · due ${dueLabel(it)} · ${p[2].slice(0, 2).join(', ')}`, it.id, sent);
+    }
+  }
+  try { localStorage.setItem(NOTIFIED_KEY, JSON.stringify([...done].slice(-800))); } catch (_) {}
+  return sent;
+}
+function renderRemindPanel() {
+  const R = extras.remind, box = $('remindBody');
+  if (box.contains(document.activeElement) && document.activeElement.type === 'time') return;
+  const paused = +(R.snooze.all || 0) > Date.now();
+  box.innerHTML = `${notifier() ? '' : `<p class="note">${window.desktop ? 'Notifications aren’t available on this computer.' : 'Notifications come from the desktop app. These settings sync to it when you’re signed in; here, this Today page is your summary.'}</p>`}
+    <div class="toggle-row"><div>Reminders<small>${paused ? `Paused until ${esc(new Date(R.snooze.all).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' }))}` : 'Desktop notifications for deadlines and your day'}</small></div><label class="switch"><input type="checkbox" data-r="on"${R.on ? ' checked' : ''} aria-label="Reminders"><span></span></label></div>
+    <div class="field"><span class="fl" id="remAtLabel">Remind me before each deadline</span><div class="filters" role="group" aria-labelledby="remAtLabel">${REMIND_STAGES.map(([h, l]) => `<button type="button" class="chip" data-at="${h}" aria-pressed="${R.at.includes(h)}">${l}</button>`).join('')}</div></div>
+    <div class="toggle-row"><div>Morning summary<small>Classes, what’s due and your top priority</small></div><span class="row"><input class="inline-in" type="time" data-r="summaryTime" value="${R.summary.time}" aria-label="Summary time"><label class="switch"><input type="checkbox" data-r="summary"${R.summary.on ? ' checked' : ''} aria-label="Morning summary"><span></span></label></span></div>
+    <div class="toggle-row"><div>Overdue work<small>Once a day, for deadlines that passed without being ticked off</small></div><label class="switch"><input type="checkbox" data-r="overdue"${R.overdue ? ' checked' : ''} aria-label="Overdue warnings"><span></span></label></div>
+    <div class="toggle-row"><div>High-priority warnings<small>When something high priority or at risk is due within 2 days</small></div><label class="switch"><input type="checkbox" data-r="urgent"${R.urgent ? ' checked' : ''} aria-label="High-priority warnings"><span></span></label></div>
+    <div class="toggle-row"><div>Quiet hours<small>Nothing arrives in this window; what’s still ahead comes after</small></div><span class="row"><input class="inline-in" type="time" data-r="quietStart" value="${R.quiet.start}" aria-label="Quiet hours start">–<input class="inline-in" type="time" data-r="quietEnd" value="${R.quiet.end}" aria-label="Quiet hours end"><label class="switch"><input type="checkbox" data-r="quiet"${R.quiet.on ? ' checked' : ''} aria-label="Quiet hours"><span></span></label></span></div>
+    <div class="row" style="padding-top:4px">${paused ? '<button type="button" class="btn sm" data-pause="0">Resume reminders</button>' : '<button type="button" class="btn sm" data-pause="60">Pause for 1 hour</button><button type="button" class="btn sm" data-pause="tomorrow">Pause until tomorrow</button>'}${notifier() ? '<button type="button" class="btn sm ghost" id="remTest">Send a test</button>' : ''}</div>`;
+}
+$('remindBody').addEventListener('click', e => {
+  const a = e.target.closest('[data-at]');
+  if (a) { const h = +a.dataset.at, R = extras.remind; R.at = R.at.includes(h) ? R.at.filter(x => x !== h) : [...R.at, h].sort((x, y) => y - x); markDirty(); renderRemindPanel(); return; }
+  const p = e.target.closest('[data-pause]'); if (p) { snooze('all', p.dataset.pause); return; }
+  if (e.target.closest('#remTest')) { const sent = []; notify('SemesterSync reminders are on', 'This is what a reminder looks like.', null, sent); if (!sent.length) toast('Notifications are blocked. Allow them for SemesterSync in your system settings.'); }
+});
+$('remindBody').addEventListener('change', e => {
+  const k = e.target.dataset.r, R = extras.remind, v = e.target.value; if (!k) return;
+  if (k === 'on' || k === 'overdue' || k === 'urgent') R[k] = e.target.checked;
+  else if (k === 'summary') R.summary.on = e.target.checked;
+  else if (k === 'quiet') R.quiet.on = e.target.checked;
+  else if (/^\d{2}:\d{2}$/.test(v)) { if (k === 'summaryTime') R.summary.time = v; else if (k === 'quietStart') R.quiet.start = v; else if (k === 'quietEnd') R.quiet.end = v; }
+  markDirty(); renderRemindPanel();
+});
+function openItem(iid) {
+  const [, it] = findItem(iid); if (!it) { setTab('today'); return; }
+  openResult({ kind: 'item', it });
+}
+
+/* ---------- Menu-bar / system-tray companion ---------- */
+let trayT = null;
+function traySummary() {
+  const T = todayData(), now = T.now;
+  const cls = T.classes.filter(x => at(TODAY, x.m.end) > now).map(({ c, m }) => ({ label: `${fmtTime(m.start)}  ${c.code}${m.where ? ' · ' + m.where : ''}` }));
+  return {
+    date: now.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),
+    badge: T.dueToday.length ? `${T.dueToday.length} due` : '',
+    classes: cls.slice(0, 5),
+    due: T.due.slice(0, 5).map(i => ({ iid: i.id, label: `${untilText(+dueAt(i) - now).replace(/^in /, '')} · ${itemCourse(i).code} ${i.title}` })),
+    top: T.top.map(({ it }) => ({ iid: it.id, label: `${itemCourse(it).code} ${it.title}` })),
+    overdue: T.overdue.length,
+    paused: +(extras.remind.snooze.all || 0) > Date.now(),
+  };
+}
+function pushTray() {
+  if (!window.desktop || !window.desktop.tray || !store.loaded) return;
+  clearTimeout(trayT);
+  trayT = setTimeout(() => { try { window.desktop.tray.update(traySummary()); } catch (_) {} }, 400);
+}
+if (window.desktop) {
+  window.desktop.onMenu('open-item', iid => openItem(String(iid || '')));
+  window.desktop.onMenu('open-today', () => setTab('today'));
+  window.desktop.onMenu('snooze-all', how => snooze('all', String(how)));
+}
+setInterval(() => {
+  checkReminders();
+  pushTray();
+  const a = document.activeElement;
+  if (tab === 'today' && !document.hidden && !(a && a.closest && a.closest('#tabToday input, #tabToday select'))) renderToday();
+}, 60000);
+document.addEventListener('ssync:remind-check', () => checkReminders());
+document.addEventListener('ssync:remind-legacy-off', () => {
+  const apply = () => { try { if (localStorage.getItem('ssync-remind-migrated')) return; localStorage.setItem('ssync-remind-migrated', '1'); } catch (_) { return; } extras.remind.on = false; markDirty(); renderTab(); };
+  if (store.loaded) apply(); else { const t = setInterval(() => { if (store.loaded) { clearInterval(t); apply(); } }, 500); }
+});
+
 /* ---------- Boot: sample courses render at once; saved ones replace them when the store answers ---------- */
 for (const text of SAMPLES) { const c = addCourse(text); applyResult(c, parseLocal(text, c.id), 'local'); c.sample = true; }
 state.freshIds = new Set();
@@ -3234,7 +3582,7 @@ runParse(false);
 setParser('local');
 initStore();
 initAi();
-let startTab = 'semester';
-try { startTab = localStorage.getItem('ssync-tab') || 'semester'; } catch (_) {}
+let startTab = 'today';
+try { startTab = localStorage.getItem('ssync-tab') || 'today'; } catch (_) {}
 setTab(startTab);
 })();

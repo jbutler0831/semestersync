@@ -67,5 +67,7 @@ contextBridge.exposeInMainWorld('desktop', {
     open: cid => ipcRenderer.invoke('source:open', cid),
     clear: () => ipcRenderer.invoke('source:clear'),
   },
-  onMenu: (name, fn) => ipcRenderer.on('menu:' + name, () => fn()),
+  onMenu: (name, fn) => ipcRenderer.on('menu:' + name, (_e, arg) => fn(arg)),
+  tray: { update: summary => ipcRenderer.send('tray:update', summary) },
+  app: { show: () => ipcRenderer.send('app:show') },
 });

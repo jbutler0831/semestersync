@@ -27,17 +27,10 @@
         <p class="msg" id="keyMsg" hidden></p>
       </section>
       <div class="toggle-row">
-        <div>Deadline reminders<small>Desktop notifications for deliverables you haven't ticked off</small></div>
-        <label class="switch"><input type="checkbox" id="remindersToggle" aria-label="Deadline reminders"><span></span></label>
+        <div>Keep running when the window is closed<small>Stays in the ${d.platform === 'darwin' ? 'menu bar' : 'system tray'} so reminders keep coming. Quit from there.</small></div>
+        <label class="switch"><input type="checkbox" id="trayToggle" aria-label="Keep running when the window is closed"><span></span></label>
       </div>
-      <section class="field">
-        <label for="remindLead">Remind me</label>
-        <select id="remindLead" class="inline-in">
-          <option value="day">The day before</option>
-          <option value="both">The day before and 2 hours before</option>
-          <option value="hours">2 hours before</option>
-        </select>
-      </section>
+      <p class="hint">Reminders, the morning summary and quiet hours are on the <button type="button" class="linkish" id="remindLink">Today</button> tab.</p>
       <div class="actions">
         <button type="button" class="btn ghost danger" id="removeKey">Remove key</button>
         <span style="flex:1"></span>
@@ -47,14 +40,13 @@
     </form>`;
   document.body.appendChild(dlg);
 
-  let settings = { hasKey: false, reminders: true };
+  let settings = { hasKey: false, keepInTray: true };
   async function openSettings() {
     settings = await d.settings.get();
     $('apiKey').value = '';
     $('apiKey').placeholder = settings.hasKey ? (settings.keyFromEnv ? 'Using ANTHROPIC_API_KEY from your environment' : 'Saved. Paste a new key to replace it') : 'sk-ant-…';
     $('removeKey').hidden = !settings.hasKey || settings.keyFromEnv;
-    $('remindersToggle').checked = settings.reminders;
-    $('remindLead').value = settings.remindLead || 'day';
+    $('trayToggle').checked = settings.keepInTray !== false;
     $('keyMsg').hidden = true;
     dlg.showModal();
     $('apiKey').focus();
@@ -65,24 +57,24 @@
   $('settingsForm').addEventListener('submit', async e => {
     e.preventDefault();
     const key = $('apiKey').value.trim();
-    const reminders = $('remindersToggle').checked, remindLead = $('remindLead').value;
+    const keepInTray = $('trayToggle').checked;
     if (key) {
       $('saveSettings').disabled = true; keyMsg('Checking key…');
       const test = await d.settings.testKey(key);
       $('saveSettings').disabled = false;
       if (!test.ok) { keyMsg(test.message, true); return; }
-      const res = await d.settings.set({ apiKey: key, reminders, remindLead });
+      const res = await d.settings.set({ apiKey: key, keepInTray });
       if (!res.ok) { keyMsg(res.message, true); return; }
       dlg.close(); location.reload(); // re-runs the page's Claude check with the new key
       return;
     }
-    await d.settings.set({ reminders, remindLead });
-    Object.assign(settings, { reminders, remindLead });
+    await d.settings.set({ keepInTray });
+    settings.keepInTray = keepInTray;
     dlg.close();
     toast('Settings saved');
-    checkReminders();
   });
   gear.onclick = openSettings;
+  $('remindLink').onclick = () => { dlg.close(); const b = document.querySelector('.nav [data-tab="today"]'); if (b) b.click(); const p = $('remindPanel'); if (p) p.scrollIntoView({ block: 'start' }); };
 
   /* ---------- Claude availability hint ---------- */
   d.claude.available().then(ok => {
@@ -277,41 +269,10 @@
   d.onMenu('theme', () => $('themeBtn').click());
   const page = detail => document.dispatchEvent(new CustomEvent('ssync:data', { detail }));
   for (const [menu, detail] of [['backup-export', 'export'], ['backup-import', 'import'], ['data', 'data'], ['search', 'search'], ['welcome', 'welcome'], ['keys', 'keys']]) d.onMenu(menu, () => page(detail));
-  for (let i = 0; i < 7; i++) d.onMenu('tab-' + i, () => { const b = document.querySelectorAll('.nav [data-tab]')[i]; if (b) b.click(); });
+  for (let i = 0; i < 8; i++) d.onMenu('tab-' + i, () => { const b = document.querySelectorAll('.nav [data-tab]')[i]; if (b) b.click(); });
   // The page asks for these from its welcome guide and Your data.
   document.addEventListener('ssync:open', e => { if (e.detail === 'settings') openSettings(); else if (e.detail === 'account') { mode = 'up'; openAccount(); } });
 
-  /* ---------- Deadline reminders ---------- */
-  const NOTIFIED_KEY = 'ssync-notified-v1';
-  function readJson(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } }
-  async function checkReminders() {
-    if (!settings.reminders || !('Notification' in window)) return;
-    // Signed in, the account's courses live in the page's cache; signed out, in the local list.
-    const cache = readJson('ssync-account-cache-v1', null);
-    const list = cache && Array.isArray(cache.docs) ? cache.docs.filter(([id]) => String(id).startsWith('course-')).map(([, json]) => json) : readJson('ssync-courses-v1', []);
-    const courses = list.map(s => { try { return JSON.parse(s); } catch { return null; } }).filter(c => c && !c.sample);
-    if (!courses.length) return;
-    const notified = new Set(readJson(NOTIFIED_KEY, []));
-    const now = Date.now(), lead = settings.remindLead || 'day';
-    // Each stage fires once: 'd' within 36 hours of the deadline, 'h' within 2 hours.
-    const stages = [...(lead !== 'hours' ? [['d', 36]] : []), ...(lead !== 'day' ? [['h', 2]] : [])];
-    for (const c of courses) for (const it of c.items || []) {
-      if (!it.sync || it.done) continue;
-      const [y, m, day] = it.date.split('-').map(Number);
-      const [h, mi] = (it.time || '23:59').split(':').map(Number);
-      const due = new Date(y, m - 1, day, h, mi).getTime();
-      if (due <= now) continue;
-      const stage = stages.filter(([, hrs]) => due - now <= hrs * 3600 * 1000).pop();
-      if (!stage) continue;
-      const key = `${it.id}|${it.date}|${it.time}${stage[0] === 'h' ? '|h' : ''}`;
-      if (notified.has(key)) continue;
-      const when = new Date(due).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' });
-      new Notification(`${c.code}: ${it.title}`, { body: `${stage[0] === 'h' ? 'Due soon' : 'Due'} ${when}${it.weight ? ` · ${it.weight}% of your grade` : ''}`, silent: false });
-      notified.add(key);
-      if (stage[0] === 'h') notified.add(`${it.id}|${it.date}|${it.time}`); // no day-before reminder after this one
-    }
-    try { localStorage.setItem(NOTIFIED_KEY, JSON.stringify([...notified].slice(-500))); } catch { /* storage full; reminders may repeat */ }
-  }
-  d.settings.get().then(s => { settings = s; setTimeout(checkReminders, 4000); });
-  setInterval(checkReminders, 15 * 60 * 1000);
+  // Reminders moved to the page (Today tab). Someone who turned them off in 1.2 keeps them off.
+  d.settings.get().then(s => { settings = s; if (s.reminders === false) document.dispatchEvent(new CustomEvent('ssync:remind-legacy-off')); });
 })();

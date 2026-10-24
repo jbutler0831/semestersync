@@ -21,6 +21,7 @@ Updating keeps your courses, settings and sign-in.
 
 | Tab | What's in it |
 |---|---|
+| **Today** | A compact view of the day: classes (read from each syllabus's meeting times, editable under **Class times**, skipping holidays and breaks), your top 3 priorities with why, what's due next with a countdown, today's study plan, and overdue or at-risk warnings. |
 | **Semester** | Add syllabi as PDFs, text or photos (**Scan photo** reads a printed page with Claude). After each parse, **What we found** lists everything to check before you rely on it: low-confidence items, ambiguous dates like 3/4, a missing year, weights that don't add to 100%, missing items. Fix them in place or jump to the line in the syllabus. The original file is kept with the course. Then every deliverable (searchable and filterable), grading breakdown, workload heatmap and calendar export. |
 | **Plan** | Smart deadlines (overdue, today, this week) ranked by priority, with done checkboxes and time logging. An adaptive study planner books work into the hours you have each day and re-plans whenever you finish something, log time or miss a day. Deadlines that won't fit are flagged as at risk, with how many hours short you are. Days with two or more big deadlines are called out, planned work you didn't log yesterday is named and moved forward, you can lock a session to its day, and every priority explains itself (tap **High** to see why). |
 | **Grades** | Grade predictor: enter scores and see your current grade, projected final and what you need on the rest for each letter. GPA simulator with credits, what-if grades, cumulative GPA and a goal GPA. |
@@ -28,6 +29,10 @@ Updating keeps your courses, settings and sign-in.
 | **Coach** | Chat with Claude about your semester. It sees your courses, deadlines, grades and plan, and nothing else. |
 | **Rooms** | Study rooms: join with a code, see who's there, what they're working on and their focus timers, and chat. Finished focus sessions count as logged time. |
 | **Insights** | Deadlines done, hours logged, projected GPA, grades and remaining work by course, planned hours vs. available hours for 8 weeks, and a **stress test** that shows what breaks if you lose days or study less. |
+
+**Reminders** (Today tab): desktop notifications before each deadline at the times you pick (1 week, 3 days, 1 day, 6 hours, 2 hours, 1 hour), a morning summary of your day, a daily nudge about overdue work, warnings when something high priority is due within two days, quiet hours (nothing arrives; what's still ahead comes after), and snooze for one deliverable or pause everything for an hour or until tomorrow. Settings follow your account to every computer; what was already sent is tracked per computer so nothing repeats.
+
+**Menu bar / system tray:** SemesterSync puts an icon in the Mac menu bar (with how many things are due today) or the Windows system tray. Its menu lists today's remaining classes, your top priorities and what's due next. Click one to open it, or pause reminders from there. Closing the window keeps the app running there so reminders keep coming (turn that off in Settings). Real home-screen or Notification Center widgets need native WidgetKit/Windows code that Electron apps can't provide, so the tray is the widget.
 
 **Your data** (the database icon, top right) has backups, restore, safety copies, sync status, theme and Start over. See [Backups and safety](#backups-and-safety).
 
@@ -50,7 +55,7 @@ Set `SEMESTERSYNC_DATA_DIR=/some/folder` to run on a separate profile without to
 npm test
 ```
 
-Runs the real app on a throwaway profile with a fake Claude API and a fake account server (66 checks, about 2 minutes). Nothing touches your data, your Claude key or Supabase. It covers first launch, syllabus review, calendar export, backup and restore, damaged data, the planner, search and shortcuts, and sync between two computers: changes flowing both ways, the same course edited on both, working offline, deleting, signing out, and signing into an account that already has courses. The GitHub workflow runs it on macOS and Windows for every push and before any release.
+Runs the real app on a throwaway profile with a fake Claude API and a fake account server (78 checks, about 2 minutes). Nothing touches your data, your Claude key or Supabase. It covers first launch, the Today view and reminders (intervals, morning summary, overdue and high-priority warnings, quiet hours, pausing, no repeats, the tray summary), syllabus review, calendar export, backup and restore, damaged data, the planner, search and shortcuts, and sync between two computers: changes flowing both ways, the same course edited on both, working offline, deleting, signing out, and signing into an account that already has courses. The GitHub workflow runs it on macOS and Windows for every push and before any release.
 
 ## Backups and safety
 
@@ -116,8 +121,8 @@ How it works:
 ## Build installers
 
 ```bash
-npm run dist:mac   # dist/SemesterSync-1.2.0-universal.dmg (Intel + Apple silicon)
-npm run dist:win   # dist/SemesterSync-Setup-1.2.0.exe (x64 + arm64)
+npm run dist:mac   # dist/SemesterSync-1.3.0-universal.dmg (Intel + Apple silicon)
+npm run dist:win   # dist/SemesterSync-Setup-1.3.0.exe (x64 + arm64)
 scripts/verify-installer.sh   # installs/mounts the build, starts it on a throwaway profile, checks signing
 ```
 
@@ -146,7 +151,8 @@ After adding them, set the repository variable `REQUIRE_SIGNED` to `1` so a rele
 | `src/preload.js` | The only bridge between the page and the main process (context isolation on, no Node in the page) |
 | `src/renderer/index.html`, `app.js` | The app UI |
 | `src/renderer/bridge.js` | Connects the UI's Claude calls to the main process |
-| `src/renderer/desktop.js` | Settings and account dialogs, menu shortcuts, deadline notifications |
+| `src/renderer/desktop.js` | Settings and account dialogs, menu shortcuts |
+| `src/assets/` | Menu-bar and tray icons |
 | `test/e2e.js`, `test/fake-claude.js` | The regression tests (`npm test`) |
 | `scripts/verify-installer.sh` | Checks a built installer installs and starts |
 | `build/icon.png` | App icon (electron-builder converts it to .icns and .ico) |
@@ -159,7 +165,7 @@ After adding them, set the repository variable `REQUIRE_SIGNED` to `1` so a rele
 | Open syllabus file | ⌘O | Ctrl+O |
 | Export to calendar app | ⌘E | Ctrl+E |
 | Search everything | ⌘K or / | Ctrl+K or / |
-| Switch tabs | ⌘1 – ⌘7 | Ctrl+1 – Ctrl+7 |
+| Switch tabs (Today first) | ⌘1 – ⌘8 | Ctrl+1 – Ctrl+8 |
 | Export a backup | ⇧⌘B | Ctrl+Shift+B |
 | Show all shortcuts | ? | ? |
 | Parse while editing | ⌘↵ | Ctrl+Enter |
