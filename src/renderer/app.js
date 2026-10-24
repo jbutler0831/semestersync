@@ -1188,6 +1188,7 @@ function cleanItem(x, cid, n) {
   if (x.done) { it.done = true; it.doneAt = /^\d{4}-\d{2}-\d{2}$/.test(x.doneAt) ? x.doneAt : null; }
   if (x.backfilled) it.backfilled = true;
   if (x.checked) it.checked = true;
+  if (typeof x.scoredAt === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x.scoredAt)) it.scoredAt = x.scoredAt;
   if (x.score !== null && x.score !== undefined && x.score !== '' && isFinite(+x.score)) it.score = num(x.score, 0, 150, null);
   if (x.spent) it.spent = num(x.spent, 0, 500, 0);
   if (x.locks && typeof x.locks === 'object') { it.locks = {}; for (const [k, h] of Object.entries(x.locks)) if (/^\d{4}-\d{2}-\d{2}$/.test(k) && +h > 0) it.locks[k] = num(h, 0, 16, 0); }
@@ -1727,7 +1728,8 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', paintTheme
 /* ---------- Saved extras: planner hours, GPA inputs, review history, study sets ---------- */
 const EXTRAS_KEY = 'ssync-extras-v1';
 const EXTRAS_DEFAULT = () => ({ planner: { hours: [3, 3, 3, 3, 2, 1, 2], block: 1.5, snap: null, missed: null }, gpa: { prior: '', priorCredits: '', goal: '' }, review: { days: {} }, cal: { exported: {}, seq: {}, at: 0 }, lastExport: 0,
-  remind: { on: true, at: [24], summary: { on: true, time: '08:00' }, overdue: true, urgent: true, quiet: { on: true, start: '22:00', end: '07:30' }, snooze: {} } });
+  remind: { on: true, at: [24], summary: { on: true, time: '08:00' }, overdue: true, urgent: true, quiet: { on: true, start: '22:00', end: '07:30' }, snooze: {}, study: { on: false, time: '16:00' }, weekly: { on: true, day: 0, time: '18:00' }, muted: [], focusEnd: true },
+  history: [], weekSnaps: {} });
 const extras = EXTRAS_DEFAULT();
 function resetExtras() { const d = EXTRAS_DEFAULT(); for (const k of Object.keys(d)) extras[k] = d[k]; decks = []; }
 let decks = [];
@@ -1752,12 +1754,18 @@ function adoptExtras(list) {
         if (v.planner && v.planner.missed !== undefined) extras.planner.missed = v.planner.missed && isFinite(+v.planner.missed.h) ? v.planner.missed : null;
         if (v.cal && typeof v.cal === 'object') extras.cal = { exported: v.cal.exported && typeof v.cal.exported === 'object' ? v.cal.exported : {}, seq: v.cal.seq && typeof v.cal.seq === 'object' ? v.cal.seq : {}, at: +v.cal.at || 0 };
         if (+v.lastExport) extras.lastExport = +v.lastExport;
+        if (Array.isArray(v.history)) extras.history = v.history.filter(x => x && isFinite(+x.at) && +x.h > 0 && +x.h <= 16).slice(-1500).map(x => ({ id: clip(x.id, 20) || uid(), at: +x.at, h: Math.round(+x.h * 100) / 100, iid: x.iid ? clip(x.iid, 60) : null, cid: x.cid ? clip(x.cid, 40) : null, t: clip(x.t, 80) || 'Study', code: clip(x.code, 18), kind: ['focus', 'room', 'plan', 'log'].includes(x.kind) ? x.kind : 'log' }));
+        if (v.weekSnaps && typeof v.weekSnaps === 'object') { extras.weekSnaps = {}; for (const [k, snap] of Object.entries(v.weekSnaps).slice(-30)) if (/^\d{4}-\d{2}-\d{2}$/.test(k) && snap && typeof snap === 'object') { extras.weekSnaps[k] = {}; for (const [cid, p] of Object.entries(snap)) if (isFinite(+p)) extras.weekSnaps[k][clip(cid, 40)] = +p; } }
         if (v.remind && typeof v.remind === 'object') {
           const r = v.remind, R = extras.remind, hhmm = x => typeof x === 'string' && /^\d{2}:\d{2}$/.test(x);
           for (const k of ['on', 'overdue', 'urgent']) if (typeof r[k] === 'boolean') R[k] = r[k];
           if (Array.isArray(r.at)) R.at = r.at.map(Number).filter(h => REMIND_STAGES.some(s => s[0] === h));
           if (r.summary) { if (typeof r.summary.on === 'boolean') R.summary.on = r.summary.on; if (hhmm(r.summary.time)) R.summary.time = r.summary.time; }
           if (r.quiet) { if (typeof r.quiet.on === 'boolean') R.quiet.on = r.quiet.on; if (hhmm(r.quiet.start)) R.quiet.start = r.quiet.start; if (hhmm(r.quiet.end)) R.quiet.end = r.quiet.end; }
+          for (const k of ['focusEnd']) if (typeof r[k] === 'boolean') R[k] = r[k];
+          if (r.study) { if (typeof r.study.on === 'boolean') R.study.on = r.study.on; if (hhmm(r.study.time)) R.study.time = r.study.time; }
+          if (r.weekly) { if (typeof r.weekly.on === 'boolean') R.weekly.on = r.weekly.on; if (Number.isInteger(r.weekly.day) && r.weekly.day >= 0 && r.weekly.day <= 6) R.weekly.day = r.weekly.day; if (hhmm(r.weekly.time)) R.weekly.time = r.weekly.time; }
+          if (Array.isArray(r.muted)) R.muted = r.muted.filter(x => typeof x === 'string' && /^[\w-]{1,40}$/.test(x)).slice(0, 20);
           if (r.snooze && typeof r.snooze === 'object') R.snooze = Object.fromEntries(Object.entries(r.snooze).filter(([k, x]) => /^[\w.-]{1,60}$/.test(k) && +x > Date.now()).map(([k, x]) => [k, +x]));
         }
       } else if (id.startsWith('deck-')) { const d = cleanDeck(v); if (d) decks.push(d); }
@@ -1893,7 +1901,7 @@ function trackMissed(plan) {
   return P.missed;
 }
 function logTime(it, h) {
-  it.spent = Math.round(((+it.spent || 0) + h) * 4) / 4;
+  addTime(it, h, 'log');
   const left = remaining(it);
   toast(left > 0 ? `Logged ${fmtH(h)} h on ${it.title}. About ${fmtH(left)} h left.` : `Logged ${fmtH(h)} h. ${it.title} is fully worked; tick it off when it's handed in.`);
   markDirty(); renderTab();
@@ -1999,7 +2007,7 @@ $('deadlines').addEventListener('click', e => {
 $('planDays').addEventListener('click', planClick);
 $('planRisk').addEventListener('click', e => {
   const m = extras.planner.missed; if (!m) return;
-  if (e.target.closest('#missedLog')) { for (const [iid, h] of m.items) { const [, it] = findItem(iid); if (it) it.spent = Math.round(((+it.spent || 0) + h) * 4) / 4; } toast(`Logged ${fmtH(m.h)} h`); }
+  if (e.target.closest('#missedLog')) { for (const [iid, h] of m.items) { const [, it] = findItem(iid); if (it) addTime(it, h, 'log', +at(fromIso(m.day), '18:00')); } toast(`Logged ${fmtH(m.h)} h`); }
   else if (!e.target.closest('#missedOk')) return;
   extras.planner.missed = null; markDirty(); renderPlan();
 });
@@ -2103,6 +2111,7 @@ $('scoreRows').addEventListener('change', e => {
   const [, it] = findItem(e.target.closest('tr').dataset.iid); if (!it) return;
   const v = e.target.value.trim();
   it.score = v === '' ? null : Math.max(0, Math.min(150, +v));
+  if (it.score == null) delete it.scoredAt; else it.scoredAt = iso(new Date());
   markDirty(); renderGrades();
 });
 $('gpaRows').addEventListener('change', e => {
@@ -2628,7 +2637,7 @@ function roomTick() {
     const t = rm.timer; rm.timer = null;
     if (t.mode === 'focus') {
       const [, it] = findItem(t.task);
-      if (it) { it.spent = Math.round(((+it.spent || 0) + t.mins / 60) * 4) / 4; markDirty(); }
+      addTime(it || null, t.mins / 60, 'room');
       toast(it ? `Focus done. Logged ${t.mins} min on ${it.title}. Take a break!` : 'Focus session done. Take a break!');
     } else toast('Break’s over. Ready for another round?');
     pushPresence();
@@ -2727,6 +2736,8 @@ function renderInsights() {
   $('insWeeks').innerHTML = weeks.map((w, i) => `<button type="button" class="col" data-wk="${i}" aria-label="Week of ${fmtDay(w.start)}: ${fmtH(w.h)} hours planned of ${fmtH(w.cap)} available"><span class="area"><i class="${w.h > w.cap + 0.01 ? 'over' : ''}" style="height:${w.h / maxW * 100}%"></i><span class="cap" style="bottom:${w.cap / maxW * 100}%"></span></span><span>${i === 0 ? 'This wk' : fmtDay(w.start)}</span></button>`).join('');
   insWeeksData = weeks;
   renderStress();
+  renderHistory();
+  renderReport();
 }
 let insWeeksData = [];
 for (const ev of ['pointerover', 'focusin']) $('insWeeks').addEventListener(ev, e => { const b = e.target.closest('[data-wk]'); const w = b && insWeeksData[+b.dataset.wk]; if (w) showTip(b, `<b>Week of ${fmtDay(w.start)}</b><ul><li><span>Planned</span><span class="tm">${fmtH(w.h)} h</span></li><li><span>Available</span><span class="tm">${fmtH(w.cap)} h</span></li></ul>`); });
@@ -3494,6 +3505,7 @@ function renderToday() {
   const blocks = (T.plan.days.get(iso(TODAY)) || []).sort((a, b) => a.it.date.localeCompare(b.it.date));
   $('todayPlan').innerHTML = blocks.length ? blocks.map(x => `<div class="blk" data-iid="${x.it.id}"><span class="bar" style="background:${colorOf(itemCourse(x.it))}"></span><span class="bt">${esc(x.it.title)}<small>${esc(itemCourse(x.it).code)} · ${fmtH(x.h)} h · due ${fmtDay(dueDate(x.it))}</small></span><span class="bacts"><button type="button" data-log="${x.h}" title="Log this session as done">Did it</button></span></div>`).join('') : `<div class="empty">${extras.planner.hours[(TODAY.getDay() + 6) % 7] ? 'Nothing booked today.' : 'Today is a day off in your study hours.'}</div>`;
   renderRemindPanel();
+  renderFocusPanel();
 }
 function renderMeetsEditor() {
   const box = $('meetsEdit');
@@ -3573,7 +3585,7 @@ function checkReminders(force) {
   if (!store.loaded || !R.on || !notifier()) return sent;
   const now = new Date(), nowMs = +now;
   if (!force && (inQuiet(now) || +(R.snooze.all || 0) > nowMs)) return sent;
-  const done = readNotified(), today = iso(TODAY), mine = state.courses.filter(c => !c.sample);
+  const done = readNotified(), today = iso(TODAY), mine = state.courses.filter(c => !c.sample && !R.muted.includes(c.id));
   const items = mine.flatMap(c => c.items).filter(i => !i.done && i.sync !== false);
   const stages = [...R.at].sort((a, b) => b - a);
   for (const it of items) {
@@ -3595,14 +3607,27 @@ function checkReminders(force) {
     const cls = T.classes.filter(x => !x.c.sample);
     notify('Your day', [`${cls.length ? `${cls.length} class${cls.length > 1 ? 'es' : ''}, first at ${fmtTime(cls[0].m.start)}` : 'No classes'}`, `${real(T.dueToday).length || 'nothing'} due today`, top ? `top priority: ${top.it.title}` : ''].filter(Boolean).join(' · '), null, sent);
   }
-  if (R.overdue && real(T.overdue).length && !done.has('overdue|' + today)) {
+  const o = real(T.overdue).filter(i => !R.muted.includes(i.cid));
+  if (R.overdue && o.length && !done.has('overdue|' + today)) {
     done.add('overdue|' + today);
-    const o = real(T.overdue);
     notify(`${o.length} deadline${o.length > 1 ? 's' : ''} passed`, `${o.slice(0, 3).map(i => `${itemCourse(i).code} ${i.title}`).join(', ')}. Tick off what you handed in.`, null, sent);
+  }
+  // A nudge to start today's planned study, unless some time is already logged today.
+  if (R.study.on && !done.has('study|' + today) && now >= at(TODAY, R.study.time) && nowMs - +at(TODAY, R.study.time) < 3 * 3600000) {
+    done.add('study|' + today);
+    const blocks = (T.plan.days.get(today) || []).filter(x => !(itemCourse(x.it) || {}).sample);
+    if (blocks.length && !histOn(TODAY).length) notify('Time to study', blocks.slice(0, 3).map(x => `${itemCourse(x.it).code} ${x.it.title} (${fmtH(x.h)} h)`).join(' · '), blocks[0].it.id, sent);
+  }
+  // The weekly report, on the chosen day and time.
+  const wk = iso(weekStart(TODAY));
+  if (R.weekly.on && now.getDay() === R.weekly.day && now >= at(TODAY, R.weekly.time) && !done.has('weekly|' + wk)) {
+    done.add('weekly|' + wk);
+    const r = weeklyReport(R.weekly.day === 0 ? weekStart(TODAY) : addDays(weekStart(TODAY), -7));
+    try { const n = new Notification(`Your week: ${r.headline.toLowerCase()}`, { body: `${fmtH(r.hours)} h studied · ${r.doneN} of ${r.due.length} deadlines done · ${r.nextDue.length} due next week` }); n.onclick = () => { if (window.desktop.app) window.desktop.app.show(); reportWeek = r.mon; setTab('insights'); const p = $('reportPanel'); if (p) p.scrollIntoView({ block: 'start' }); }; sent.push('weekly'); } catch (_) {}
   }
   if (R.urgent) {
     for (const { it, p, risk } of T.top) {
-      if ((itemCourse(it) || {}).sample || !(risk || p[0] === 'High') || +dueAt(it) - nowMs > 48 * 3600000 || +(R.snooze[it.id] || 0) > nowMs) continue;
+      if ((itemCourse(it) || {}).sample || R.muted.includes(it.cid) || !(risk || p[0] === 'High') || +dueAt(it) - nowMs > 48 * 3600000 || +(R.snooze[it.id] || 0) > nowMs) continue;
       const key = `urgent|${it.id}|${today}`; if (done.has(key)) continue;
       done.add(key);
       notify(`High priority: ${it.title}`, `${itemCourse(it).code} · due ${dueLabel(it)} · ${p[2].slice(0, 2).join(', ')}`, it.id, sent);
@@ -3622,20 +3647,29 @@ function renderRemindPanel() {
     <div class="toggle-row"><div>Overdue work<small>Once a day, for deadlines that passed without being ticked off</small></div><label class="switch"><input type="checkbox" data-r="overdue"${R.overdue ? ' checked' : ''} aria-label="Overdue warnings"><span></span></label></div>
     <div class="toggle-row"><div>High-priority warnings<small>When something high priority or at risk is due within 2 days</small></div><label class="switch"><input type="checkbox" data-r="urgent"${R.urgent ? ' checked' : ''} aria-label="High-priority warnings"><span></span></label></div>
     <div class="toggle-row"><div>Quiet hours<small>Nothing arrives in this window; what’s still ahead comes after</small></div><span class="row"><input class="inline-in" type="time" data-r="quietStart" value="${R.quiet.start}" aria-label="Quiet hours start">–<input class="inline-in" type="time" data-r="quietEnd" value="${R.quiet.end}" aria-label="Quiet hours end"><label class="switch"><input type="checkbox" data-r="quiet"${R.quiet.on ? ' checked' : ''} aria-label="Quiet hours"><span></span></label></span></div>
+    <div class="toggle-row"><div>Study nudge<small>If nothing’s logged by then, a reminder of today’s planned study</small></div><span class="row"><input class="inline-in" type="time" data-r="studyTime" value="${R.study.time}" aria-label="Study nudge time"><label class="switch"><input type="checkbox" data-r="study"${R.study.on ? ' checked' : ''} aria-label="Study nudge"><span></span></label></span></div>
+    <div class="toggle-row"><div>Weekly report<small>A summary of your week, with what’s coming next</small></div><span class="row"><select class="inline-in" data-r="weeklyDay" aria-label="Weekly report day">${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((d, n) => `<option value="${n}"${R.weekly.day === n ? ' selected' : ''}>${d}</option>`).join('')}</select><input class="inline-in" type="time" data-r="weeklyTime" value="${R.weekly.time}" aria-label="Weekly report time"><label class="switch"><input type="checkbox" data-r="weekly"${R.weekly.on ? ' checked' : ''} aria-label="Weekly report"><span></span></label></span></div>
+    <div class="toggle-row"><div>Focus timer<small>A notification when a focus session or break ends</small></div><label class="switch"><input type="checkbox" data-r="focusEnd"${R.focusEnd ? ' checked' : ''} aria-label="Focus timer notifications"><span></span></label></div>
+    ${state.courses.length ? `<div class="field"><span class="fl" id="muteLabel">Mute a course</span><div class="filters" role="group" aria-labelledby="muteLabel">${state.courses.map(c => `<button type="button" class="chip" data-mute="${c.id}" aria-pressed="${R.muted.includes(c.id)}"><span class="dot" style="background:${colorOf(c)};width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px"></span>${esc(c.code)}</button>`).join('')}</div></div>` : ''}
     <div class="row" style="padding-top:4px">${paused ? '<button type="button" class="btn sm" data-pause="0">Resume reminders</button>' : '<button type="button" class="btn sm" data-pause="60">Pause for 1 hour</button><button type="button" class="btn sm" data-pause="tomorrow">Pause until tomorrow</button>'}${notifier() ? '<button type="button" class="btn sm ghost" id="remTest">Send a test</button>' : ''}</div>`;
 }
 $('remindBody').addEventListener('click', e => {
   const a = e.target.closest('[data-at]');
   if (a) { const h = +a.dataset.at, R = extras.remind; R.at = R.at.includes(h) ? R.at.filter(x => x !== h) : [...R.at, h].sort((x, y) => y - x); markDirty(); renderRemindPanel(); return; }
   const p = e.target.closest('[data-pause]'); if (p) { snooze('all', p.dataset.pause); return; }
+  const mu = e.target.closest('[data-mute]');
+  if (mu) { const R = extras.remind, id = mu.dataset.mute; R.muted = R.muted.includes(id) ? R.muted.filter(x => x !== id) : [...R.muted, id]; markDirty(); renderRemindPanel(); return; }
   if (e.target.closest('#remTest')) { const sent = []; notify('SemesterSync reminders are on', 'This is what a reminder looks like.', null, sent); if (!sent.length) toast('Notifications are blocked. Allow them for SemesterSync in your system settings.'); }
 });
 $('remindBody').addEventListener('change', e => {
   const k = e.target.dataset.r, R = extras.remind, v = e.target.value; if (!k) return;
-  if (k === 'on' || k === 'overdue' || k === 'urgent') R[k] = e.target.checked;
+  if (k === 'on' || k === 'overdue' || k === 'urgent' || k === 'focusEnd') R[k] = e.target.checked;
+  else if (k === 'study') R.study.on = e.target.checked;
+  else if (k === 'weekly') R.weekly.on = e.target.checked;
+  else if (k === 'weeklyDay') R.weekly.day = +v;
   else if (k === 'summary') R.summary.on = e.target.checked;
   else if (k === 'quiet') R.quiet.on = e.target.checked;
-  else if (/^\d{2}:\d{2}$/.test(v)) { if (k === 'summaryTime') R.summary.time = v; else if (k === 'quietStart') R.quiet.start = v; else if (k === 'quietEnd') R.quiet.end = v; }
+  else if (/^\d{2}:\d{2}$/.test(v)) { if (k === 'summaryTime') R.summary.time = v; else if (k === 'studyTime') R.study.time = v; else if (k === 'weeklyTime') R.weekly.time = v; else if (k === 'quietStart') R.quiet.start = v; else if (k === 'quietEnd') R.quiet.end = v; }
   markDirty(); renderRemindPanel();
 });
 function openItem(iid) {
@@ -3680,6 +3714,251 @@ document.addEventListener('ssync:remind-legacy-off', () => {
   if (store.loaded) apply(); else { const t = setInterval(() => { if (store.loaded) { clearInterval(t); apply(); } }, 500); }
 });
 
+/* ---------- Study history ---------- */
+// Every bit of logged time becomes an entry: focus sessions, "+1 h", "Did it", room timers, catch-up logs.
+// The title and course code are copied in, so history still reads right after a deliverable is deleted.
+function addTime(it, h, kind, at) {
+  h = Math.round(h * 100) / 100;
+  if (!(h > 0)) return;
+  if (it) it.spent = Math.round(((+it.spent || 0) + h) * 4) / 4;
+  const c = it ? itemCourse(it) : null;
+  extras.history.push({ id: uid(), at: at || Date.now(), h, iid: it ? it.id : null, cid: c ? c.id : null, t: it ? clip(it.title, 80) : 'General study', code: c ? c.code : '', kind });
+  if (extras.history.length > 1500) extras.history.splice(0, extras.history.length - 1500);
+  markDirty();
+}
+const fmtDur = h => h < 1 ? `${Math.round(h * 60)} min` : `${fmtH(h)} h`;
+const histOn = d => { const a = +startOfDay(d), b = a + DAY; return extras.history.filter(x => x.at >= a && x.at < b); };
+const hoursIn = (from, to) => extras.history.filter(x => x.at >= +from && x.at < +to).reduce((a, x) => a + x.h, 0);
+function studyDayStreak() {
+  let n = 0, d = TODAY;
+  if (!histOn(d).length) d = addDays(d, -1);
+  while (histOn(d).reduce((a, x) => a + x.h, 0) >= 0.25) { n++; d = addDays(d, -1); }
+  return n;
+}
+let histDays = [];
+function renderHistory() {
+  const mon = addDays(TODAY, -((TODAY.getDay() + 6) % 7));
+  const thisWk = hoursIn(mon, addDays(TODAY, 1)), lastWk = hoursIn(addDays(mon, -7), mon);
+  const last14 = hoursIn(addDays(TODAY, -13), addDays(TODAY, 1));
+  $('histKpis').innerHTML = [
+    ['This week', `${fmtH(thisWk)} h`, lastWk ? `${thisWk >= lastWk ? '+' : '−'}${fmtH(Math.abs(thisWk - lastWk))} h vs last week` : 'Since Monday'],
+    ['Daily average', `${fmtH(last14 / 14)} h`, 'Over the last 14 days'],
+    ['Study streak', `${studyDayStreak()} day${studyDayStreak() === 1 ? '' : 's'}`, 'Days with 15+ minutes logged'],
+    ['All time', `${fmtH(extras.history.reduce((a, x) => a + x.h, 0))} h`, `${extras.history.length} session${extras.history.length === 1 ? '' : 's'}`],
+  ].map(([k, v, d]) => `<div class="kpi"><div class="k">${k}</div><div class="v">${esc(v)}</div><div class="d">${esc(d)}</div></div>`).join('');
+  histDays = Array.from({ length: 14 }, (_, n) => { const d = addDays(TODAY, n - 13), list = histOn(d); return { d, list, h: list.reduce((a, x) => a + x.h, 0) }; });
+  const max = Math.max(1, ...histDays.map(x => x.h));
+  $('histChart').innerHTML = histDays.map((x, i) => `<button type="button" class="col" data-hd="${i}" aria-label="${fmtDow(x.d)} ${fmtDay(x.d)}: ${fmtH(x.h)} hours studied"><span class="area"><i style="height:${x.h / max * 100}%"></i></span><span>${i === 13 ? 'Today' : (x.d.getDay() === 1 || i === 0) ? fmtDay(x.d) : fmtDow(x.d)[0]}</span></button>`).join('');
+  const recent = extras.history.slice(-12).reverse();
+  $('histList').innerHTML = recent.length ? recent.map(x => `<li data-hid="${x.id}"><span class="when">${esc(new Date(x.at).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</span><span class="what">${x.code ? `<b>${esc(x.code)}</b> ` : ''}${esc(x.t)}<small>${{ focus: 'Focus session', room: 'Study room timer', plan: 'Planned session', log: 'Logged time' }[x.kind] || 'Logged time'}</small></span><span class="h mono">${fmtDur(x.h)}</span><button type="button" class="icon-btn" data-hdel aria-label="Delete this entry"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></li>`).join('') : '<li class="note">Nothing yet. Start a focus session on the Today tab, or log time from the Plan tab.</li>';
+}
+for (const ev of ['pointerover', 'focusin']) $('histChart').addEventListener(ev, e => {
+  const b = e.target.closest('[data-hd]'), x = b && histDays[+b.dataset.hd]; if (!x) return;
+  const by = new Map(); x.list.forEach(s => by.set(s.code || 'General', (by.get(s.code || 'General') || 0) + s.h));
+  showTip(b, `<b>${fmtDow(x.d)}, ${fmtDay(x.d)}</b> <span class="tm">· ${fmtH(x.h)} h</span>${by.size ? `<ul>${[...by].sort((a, b) => b[1] - a[1]).map(([k, h]) => `<li><span>${esc(k)}</span><span class="tm">${fmtH(h)} h</span></li>`).join('')}</ul>` : ''}`);
+});
+for (const ev of ['pointerout', 'focusout']) $('histChart').addEventListener(ev, hideTip);
+$('histList').addEventListener('click', e => {
+  const li = e.target.closest('[data-hid]'); if (!li || !e.target.closest('[data-hdel]')) return;
+  const n = extras.history.findIndex(x => x.id === li.dataset.hid); if (n < 0) return;
+  const [x] = extras.history.splice(n, 1);
+  const [, it] = x.iid ? findItem(x.iid) : [null, null];
+  if (it) it.spent = Math.max(0, Math.round(((+it.spent || 0) - x.h) * 4) / 4);
+  markDirty(); renderTab();
+  toast(`Deleted ${fmtDur(x.h)}`, { label: 'Undo', fn: () => { extras.history.splice(n, 0, x); if (it) it.spent = Math.round(((+it.spent || 0) + x.h) * 4) / 4; markDirty(); renderTab(); } });
+});
+
+/* ---------- Focus timer ---------- */
+// Lives on this device (localStorage), so it keeps counting through a reload; the time it logs syncs.
+const FOCUS_KEY = 'ssync-focus-v1';
+let focus = (() => { try { return JSON.parse(localStorage.getItem(FOCUS_KEY)) || null; } catch (_) { return null; } })();
+let focusMins = 25, breakMins = 5;
+const saveFocus = () => { try { if (focus) localStorage.setItem(FOCUS_KEY, JSON.stringify(focus)); else localStorage.removeItem(FOCUS_KEY); } catch (_) {} };
+const focusLeft = () => !focus ? 0 : focus.paused != null ? focus.paused : Math.max(0, focus.ends - Date.now());
+function startFocus(mode, mins, iid) {
+  focus = { mode, mins, iid: iid || null, ends: Date.now() + mins * 60000, paused: null };
+  saveFocus(); paintFocus();
+}
+function endFocus(logIt) {
+  const f = focus; if (!f) return;
+  focus = null; saveFocus();
+  if (f.mode === 'focus' && logIt) {
+    const did = (f.mins * 60000 - (f.paused != null ? f.paused : Math.max(0, f.ends - Date.now()))) / 3600000;
+    const [, it] = f.iid ? findItem(f.iid) : [null, null];
+    if (did >= 1 / 60) { addTime(it, did, 'focus'); toast(`Logged ${Math.round(did * 60)} min${it ? ` on ${it.title}` : ''}`); }
+  }
+  paintFocus(); renderTab();
+}
+function finishFocus() {
+  const f = focus; if (!f) return;
+  const [, it] = f.iid ? findItem(f.iid) : [null, null];
+  if (f.mode === 'focus') {
+    addTime(it, f.mins / 60, 'focus');
+    focusNotify(`Focus session done${it ? `: ${it.title}` : ''}`, `${f.mins} minutes logged. Take a ${breakMins}-minute break.`);
+    focus = null; saveFocus();
+    toast(`Nice work: ${f.mins} min logged${it ? ` on ${it.title}` : ''}`, { label: `Start ${breakMins}-min break`, fn: () => startFocus('break', breakMins, f.iid) });
+  } else {
+    focusNotify('Break’s over', it ? `Back to ${it.title}?` : 'Ready for another round?');
+    focus = null; saveFocus();
+    toast('Break’s over', { label: `Start ${focusMins} min`, fn: () => startFocus('focus', focusMins, f.iid) });
+  }
+  paintFocus(); renderTab();
+}
+function focusNotify(title, body) {
+  if (!notifier() || !extras.remind.focusEnd) return;
+  try { const n = new Notification(title, { body }); n.onclick = () => { if (window.desktop.app) window.desktop.app.show(); setTab('today'); }; } catch (_) {}
+}
+function paintFocus() {
+  const f = focus, left = focusLeft(), live = !!f;
+  const pill = $('focusPill');
+  pill.hidden = !live;
+  if (live) { pill.textContent = `${f.mode === 'focus' ? 'Focus' : 'Break'} ${clock(left)}${f.paused != null ? ' · paused' : ''}`; pill.classList.toggle('brk', f.mode === 'break'); }
+  if (!$('focusPanel')) return;
+  $('focusClock').textContent = clock(live ? left : focusMins * 60000);
+  $('focusClock').className = 'focus-clock' + (live ? ' ' + f.mode : '');
+  $('focusState').textContent = !live ? 'Ready' : f.paused != null ? 'Paused' : f.mode === 'focus' ? 'Focusing' : 'On a break';
+  const ring = live ? 1 - left / (f.mins * 60000) : 0;
+  $('focusRing').style.setProperty('--p', ring);
+  $('focusStart').hidden = live; $('focusPause').hidden = !live; $('focusStop').hidden = !live;
+  $('focusPause').textContent = f && f.paused != null ? 'Resume' : 'Pause';
+  $('focusTask').disabled = live; $('focusLen').disabled = live;
+}
+function renderFocusPanel() {
+  const ups = pendingItems().filter(i => dueDate(i) >= addDays(TODAY, -7)).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 40);
+  const keep = focus ? focus.iid : $('focusTask').value;
+  const top = ranked().list[0];
+  const sel = keep || (top ? top.it.id : '');
+  $('focusTask').innerHTML = `<option value="">General study</option>` + ups.map(i => `<option value="${i.id}"${i.id === sel ? ' selected' : ''}>${esc(itemCourse(i).code)} · ${esc(i.title.slice(0, 50))}</option>`).join('');
+  $('focusLen').value = String(focusMins);
+  const today = histOn(TODAY), h = today.reduce((a, x) => a + x.h, 0);
+  $('focusToday').textContent = today.length ? `Today: ${fmtH(h)} h across ${today.length} session${today.length > 1 ? 's' : ''}` : 'Nothing logged yet today';
+  paintFocus();
+}
+$('focusLen').addEventListener('change', e => { focusMins = +e.target.value || 25; breakMins = focusMins >= 50 ? 10 : 5; paintFocus(); });
+$('focusStart').onclick = () => startFocus('focus', focusMins, $('focusTask').value);
+$('focusPause').onclick = () => {
+  if (!focus) return;
+  if (focus.paused != null) { focus.ends = Date.now() + focus.paused; focus.paused = null; }
+  else focus.paused = Math.max(0, focus.ends - Date.now());
+  saveFocus(); paintFocus();
+};
+$('focusStop').onclick = () => endFocus(true);
+$('focusPill').onclick = () => { setTab('today'); const p = $('focusPanel'); if (p) p.scrollIntoView({ block: 'center' }); };
+setInterval(() => { if (!focus) return; if (focus.paused == null && Date.now() >= focus.ends && store.loaded) finishFocus(); else paintFocus(); }, 1000);
+
+/* ---------- Weekly progress report ---------- */
+const weekStart = d => addDays(startOfDay(d), -((d.getDay() + 6) % 7));
+let reportWeek = null; // Monday of the week shown; defaults to last week
+// Records each course's projected grade the first time a week is seen, so a report can show the change.
+function snapWeek() {
+  const k = iso(weekStart(TODAY));
+  if (extras.weekSnaps[k] || !store.loaded) return;
+  const snap = {};
+  for (const c of state.courses) { const st = standing(c); if (st.projected != null) snap[c.id] = Math.round(st.projected * 10) / 10; }
+  extras.weekSnaps[k] = snap;
+  const keys = Object.keys(extras.weekSnaps).sort(); while (keys.length > 30) delete extras.weekSnaps[keys.shift()];
+  markDirty();
+}
+function weeklyReport(mon) {
+  const sun = addDays(mon, 6), end = addDays(mon, 7), isNow = TODAY >= mon && TODAY < end;
+  const mine = state.courses;
+  const hist = extras.history.filter(x => x.at >= +mon && x.at < +end);
+  const hours = hist.reduce((a, x) => a + x.h, 0);
+  const byCourse = new Map(); hist.forEach(x => byCourse.set(x.code || 'General', (byCourse.get(x.code || 'General') || 0) + x.h));
+  let cap = 0; for (let k = 0; k < 7; k++) { const d = addDays(mon, k); if (!isNow || d <= TODAY) cap += +extras.planner.hours[(d.getDay() + 6) % 7] || 0; }
+  const items = mine.flatMap(c => c.items);
+  const due = items.filter(i => i.date >= iso(mon) && i.date <= iso(sun) && (!isNow || dueDate(i) <= TODAY));
+  const onTime = due.filter(i => i.done && !i.backfilled && (!i.doneAt || i.doneAt <= i.date));
+  const late = due.filter(i => i.done && !i.backfilled && i.doneAt && i.doneAt > i.date);
+  const missed = due.filter(i => !i.done);
+  const early = items.filter(i => i.done && !i.backfilled && i.doneAt && i.doneAt >= iso(mon) && i.doneAt <= iso(sun) && i.date > iso(sun));
+  const scored = items.filter(i => hasScore(i) && i.scoredAt && i.scoredAt >= iso(mon) && i.scoredAt <= iso(sun));
+  const a = extras.weekSnaps[iso(mon)], b = isNow ? null : extras.weekSnaps[iso(end)];
+  const grades = mine.map(c => { const st = standing(c); const from = a && a[c.id], to = b ? b[c.id] : st.projected != null ? Math.round(st.projected * 10) / 10 : undefined; return { c, from, to }; }).filter(g => g.to != null);
+  let cards = 0; for (let k = 0; k < 7; k++) cards += +(extras.review.days[iso(addDays(mon, k))] || 0);
+  const days = new Set(hist.map(x => iso(new Date(x.at)))).size;
+  // Next week (from the week after the report)
+  const nMon = end, nSun = addDays(end, 6);
+  const nextDue = items.filter(i => !i.done && i.date >= iso(nMon) && i.date <= iso(nSun));
+  const nextW = nextDue.reduce((s, i) => s + (i.weight || 0), 0);
+  const byDay = new Map(); nextDue.forEach(i => byDay.set(i.date, (byDay.get(i.date) || 0) + 1));
+  const busiest = [...byDay].sort((x, y) => y[1] - x[1])[0];
+  const doneN = onTime.length + late.length;
+  const headline = !due.length && !hours ? 'A quiet week' : missed.length === 0 && hours >= cap * 0.8 ? 'Strong week' : missed.length === 0 ? 'Every deadline met' : missed.length > doneN ? 'A tough week' : 'Mostly on track';
+  return { mon, sun, isNow, hours, cap, byCourse, due, onTime, late, missed, early, scored, grades, cards, days, nextDue, nextW, busiest, headline, doneN };
+}
+function reportText(r) {
+  const L = [`# SemesterSync weekly report: ${fmtDay(r.mon)} – ${fmtDay(r.sun)}${r.isNow ? ' (so far)' : ''}`, '', `**${r.headline}.** ${fmtH(r.hours)} h studied on ${r.days} day${r.days === 1 ? '' : 's'}${r.cap ? ` (you set aside ${fmtH(r.cap)} h)` : ''}; ${r.doneN} of ${r.due.length} deadline${r.due.length === 1 ? '' : 's'} done.`, ''];
+  if (r.byCourse.size) { L.push('## Time by course'); for (const [k, h] of [...r.byCourse].sort((a, b) => b[1] - a[1])) L.push(`- ${k}: ${fmtH(h)} h`); L.push(''); }
+  L.push('## Deadlines');
+  for (const i of r.onTime) L.push(`- Done: ${itemCourse(i).code} ${i.title} (${fmtDay(dueDate(i))})`);
+  for (const i of r.late) L.push(`- Done late: ${itemCourse(i).code} ${i.title} (due ${fmtDay(dueDate(i))})`);
+  for (const i of r.missed) L.push(`- Not ticked off: ${itemCourse(i).code} ${i.title} (due ${fmtDay(dueDate(i))})`);
+  for (const i of r.early) L.push(`- Finished early: ${itemCourse(i).code} ${i.title} (due ${fmtDay(dueDate(i))})`);
+  if (!r.due.length && !r.early.length) L.push('- Nothing was due.');
+  L.push('');
+  if (r.grades.length || r.scored.length) {
+    L.push('## Grades');
+    for (const i of r.scored) L.push(`- New score: ${itemCourse(i).code} ${i.title}: ${+i.score}%`);
+    for (const g of r.grades) L.push(`- ${g.c.code}: projected ${g.from != null ? `${g.from}% → ` : ''}${g.to}%`);
+    L.push('');
+  }
+  if (r.cards) L.push(`## Flashcards`, `- ${r.cards} cards reviewed`, '');
+  L.push('## Next week', `- ${r.nextDue.length} deadline${r.nextDue.length === 1 ? '' : 's'}${r.nextW ? `, worth ${fmtH(r.nextW)}% of your grades in total` : ''}`);
+  if (r.busiest && r.busiest[1] > 1) L.push(`- Busiest day: ${fmtDow(fromIso(r.busiest[0]))} ${fmtDay(fromIso(r.busiest[0]))} (${r.busiest[1]} things due)`);
+  for (const i of r.nextDue.slice().sort((a, b) => b.weight - a.weight).slice(0, 4)) L.push(`- ${itemCourse(i).code} ${i.title}: ${fmtDow(dueDate(i))} ${fmtDay(dueDate(i))}${i.weight ? `, ${i.weight}%` : ''}`);
+  return L.join('\n');
+}
+function renderReport() {
+  snapWeek();
+  if (!reportWeek) reportWeek = addDays(weekStart(TODAY), -7);
+  const r = weeklyReport(reportWeek);
+  $('repTitle').textContent = `${fmtDay(r.mon)} – ${fmtDay(r.sun)}${r.isNow ? ' (so far)' : ''}`;
+  $('repNext').disabled = r.isNow;
+  // Courses remember when they were added (order is a timestamp); don't grade weeks before that.
+  const firstUse = Math.min(...state.courses.map(c => +c.order).filter(t => t > 1e12), ...extras.history.map(x => x.at));
+  if (isFinite(firstUse) && +addDays(r.mon, 7) <= firstUse && !r.hours) {
+    $('repBody').innerHTML = `<p class="note">You started using SemesterSync after this week, so there’s nothing to report. <button type="button" class="linkish" id="repLatest">Show this week</button></p>`;
+    $('repLatest').onclick = () => { reportWeek = weekStart(TODAY); renderReport(); };
+    $('repCoach').hidden = true;
+    return;
+  }
+  const pct = r.cap ? Math.min(100, r.hours / r.cap * 100) : 0;
+  const li = (i, tag, cls) => `<li><span class="pri ${cls}">${tag}</span>${tagHtml(itemCourse(i))} ${esc(i.title)} <small>${fmtDay(dueDate(i))}</small></li>`;
+  $('repBody').innerHTML = `
+    <div class="rep-head"><b>${esc(r.headline)}.</b> ${fmtH(r.hours)} h studied on ${r.days} day${r.days === 1 ? '' : 's'} · ${r.doneN} of ${r.due.length} deadline${r.due.length === 1 ? '' : 's'} done${r.cards ? ` · ${r.cards} flashcards reviewed` : ''}</div>
+    <div class="rep-grid">
+      <div><h3>Study time</h3>
+        <div class="meter-row"><span class="meter"><i style="width:${pct}%"></i></span><span class="mono">${fmtH(r.hours)} / ${fmtH(r.cap)} h</span></div>
+        <p class="note">Of the hours you set aside${r.isNow ? ' so far this week' : ''}.</p>
+        ${r.byCourse.size ? `<div class="hbars">${[...r.byCourse].sort((a, b) => b[1] - a[1]).map(([k, h]) => { const c = state.courses.find(x => x.code === k); const m = Math.max(...r.byCourse.values()); return `<div class="hbar"><span class="lab">${esc(k)}</span><span class="track"><i style="width:${h / m * 100}%;background:${c ? colorOf(c) : 'var(--faint)'}"></i></span><span class="val">${fmtH(h)} h</span></div>`; }).join('')}</div>` : '<p class="note">No time logged this week.</p>'}
+      </div>
+      <div><h3>Deadlines</h3>
+        <ul class="rep-list">${[...r.onTime.map(i => li(i, 'Done', '')), ...r.late.map(i => li(i, 'Late', 'warn')), ...r.missed.map(i => li(i, 'Not ticked off', 'crit')), ...r.early.map(i => li(i, 'Early', ''))].join('') || '<li class="note">Nothing was due.</li>'}</ul>
+      </div>
+      <div><h3>Grades</h3>
+        <ul class="rep-list">${r.scored.map(i => `<li><span class="pri">New score</span>${tagHtml(itemCourse(i))} ${esc(i.title)} <b class="mono">${+i.score}%</b></li>`).join('')}${r.grades.map(g => { const d = g.from != null ? g.to - g.from : null; return `<li>${tagHtml(g.c)} projected <b class="mono">${g.to}%</b>${d != null && Math.abs(d) >= 0.1 ? ` <span class="${d > 0 ? 'up' : 'down'}">${d > 0 ? '▲' : '▼'} ${Math.abs(d).toFixed(1)}</span>` : d != null ? ' <small>no change</small>' : ''}</li>`; }).join('') || '<li class="note">Enter scores on the Grades tab to track this.</li>'}</ul>
+      </div>
+      <div><h3>Next week</h3>
+        <p class="note">${r.nextDue.length} deadline${r.nextDue.length === 1 ? '' : 's'}${r.nextW ? `, worth ${fmtH(r.nextW)}% of your grades` : ''}${r.busiest && r.busiest[1] > 1 ? `. Busiest: ${fmtDow(fromIso(r.busiest[0]))} ${fmtDay(fromIso(r.busiest[0]))} with ${r.busiest[1]}` : ''}.</p>
+        <ul class="rep-list">${r.nextDue.slice().sort((a, b) => b.weight - a.weight).slice(0, 4).map(i => `<li>${tagHtml(itemCourse(i))} ${esc(i.title)} <small>${fmtDow(dueDate(i))} ${fmtDay(dueDate(i))}${i.weight ? ` · ${i.weight}%` : ''}</small></li>`).join('')}</ul>
+      </div>
+    </div>`;
+  $('repCoach').hidden = !sampleFn;
+}
+$('repPrev').onclick = () => { reportWeek = addDays(reportWeek, -7); renderReport(); };
+$('repNext').onclick = () => { reportWeek = addDays(reportWeek, 7); renderReport(); };
+$('repSave').onclick = async () => {
+  const r = weeklyReport(reportWeek);
+  const res = await saveFile(`SemesterSync-week-of-${iso(r.mon)}.md`, reportText(r) + '\n', 'text/markdown');
+  if (res === 'saved') toast('Saved the weekly report'); else if (res === 'unsupported') toast('Saving files isn’t available in this view.'); else if (res === 'failed') toast('Couldn’t save the report.');
+};
+$('repCoach').onclick = () => {
+  const r = weeklyReport(reportWeek);
+  setTab('coach');
+  askCoach(`Here's my weekly report. What went well, what should I change next week, and what should I start first?\n\n${reportText(r)}`);
+};
+
 /* ---------- Boot: sample courses render at once; saved ones replace them when the store answers ---------- */
 for (const text of SAMPLES) { const c = addCourse(text); applyResult(c, parseLocal(text, c.id), 'local'); c.sample = true; }
 state.freshIds = new Set();
@@ -3691,4 +3970,5 @@ initAi();
 let startTab = 'today';
 try { startTab = localStorage.getItem('ssync-tab') || 'today'; } catch (_) {}
 setTab(startTab);
+paintFocus();
 })();

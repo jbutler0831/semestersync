@@ -269,8 +269,50 @@ async function phaseLocal(A) {
   await sleep(600);
   check('the menu-bar/tray companion gets today’s summary', traySummary && traySummary.top.length === 3 && traySummary.due.length > 0, traySummary);
 
+  console.log('\n# More reminders: study nudge, weekly report, muting a course');
+  await A.js(`localStorage.removeItem('ssync-notified-v2')`);
+  await toggle('study', true);
+  await A.setVal('#remindBody [data-r="studyTime"]', hhmm(new Date(Date.now() - 60000)));
+  await A.setVal('#remindBody [data-r="weeklyDay"]', String(new Date().getDay()));
+  await A.setVal('#remindBody [data-r="weeklyTime"]', hhmm(new Date(Date.now() - 60000)));
+  const n2 = await check1();
+  check('the study nudge names today’s planned work', n2.some(n => /^Time to study/.test(n)), n2);
+  check('the weekly report arrives on the chosen day', n2.some(n => /^Your week/.test(n)), n2);
+  await A.js(`localStorage.removeItem('ssync-notified-v2')`);
+  await A.js(`[...document.querySelectorAll('#remindBody [data-mute]')].find(b => /BIO 150/.test(b.textContent)).click()`);
+  const n3 = await check1();
+  check('a muted course sends no reminders', n3.length > 0 && !n3.some(n => /BIO 150|Urgent essay|Big thing/.test(n)), n3);
+  await A.js(`[...document.querySelectorAll('#remindBody [data-mute]')].find(b => /BIO 150/.test(b.textContent)).click()`);
+
+  console.log('\n# Focus timer and study history');
+  await A.setVal('#focusLen', '15');
+  await A.click('#focusStart'); await sleep(1300);
+  check('the focus timer runs and shows on every tab', /^Focus 1[45]:\d\d/.test(await A.js(`document.getElementById('focusPill').textContent`)) && !(await A.js(`document.getElementById('focusPill').hidden`)));
+  const task = await A.js(`document.getElementById('focusTask').selectedOptions[0].textContent`);
+  await A.js(`(() => { const f = JSON.parse(localStorage.getItem('ssync-focus-v1')); f.ends = Date.now() - 1000; localStorage.setItem('ssync-focus-v1', JSON.stringify(f)); })()`);
+  await A.reload(); await sleep(1500);
+  check('a session that ends logs its time, even across a restart', /Nice work: 15 min logged/.test(await A.js(`document.getElementById('toast').textContent`)), await A.js(`document.getElementById('toast').textContent`));
+  await A.js(`document.querySelector('.nav [data-tab="insights"]').click()`); await sleep(400);
+  const hist = await A.js(`({ list: [...document.querySelectorAll('#histList li')].map(l => l.innerText.replace(/\\s+/g, ' ')), kpis: document.getElementById('histKpis').innerText, bars: document.querySelectorAll('#histChart .col').length })`);
+  check('study history lists the session', hist.list[0] && /Focus session/.test(hist.list[0]) && /15 min/.test(hist.list[0]) && task.includes(hist.list[0].split('Focus session')[0].trim().split(' ').slice(-1)[0]), { hist, task });
+  check('and charts the last 14 days', hist.bars === 14 && /this week/i.test(hist.kpis), hist);
+  const before = hist.list.length;
+  await A.click('#histList [data-hdel]'); await sleep(200);
+  await A.click('#toast .toast-act'); await sleep(300);
+  check('a wrong entry can be deleted and undone', (await A.js(`document.querySelectorAll('#histList li').length`)) === before);
+
+  console.log('\n# Weekly report');
+  await A.click('#repNext'); await sleep(200);
+  const rep = await A.js(`({ title: document.getElementById('repTitle').textContent, body: document.getElementById('repBody').innerText })`);
+  check('the weekly report covers time, deadlines, grades and next week', /so far/.test(rep.title) && /h studied/.test(rep.body) && /Deadlines/.test(rep.body) && /Grades/.test(rep.body) && /Next week/.test(rep.body), rep);
+  saved.length = 0;
+  await A.click('#repSave'); await sleep(500);
+  const md = saved[0] && fs.readFileSync(saved[0], 'utf8');
+  check('the report saves as a file', md && /^# SemesterSync weekly report/.test(md) && /## Next week/.test(md), md && md.slice(0, 200));
+  await A.js(`document.querySelector('.nav [data-tab="grades"]').click()`); await sleep(200);
+
   console.log('\n# Grades: final-exam targets, weighted calculator, GPA estimate');
-  await A.js(`document.querySelector('.nav [data-tab="grades"]').click()`); await sleep(300);
+  await sleep(300);
   await A.js(`[...document.querySelectorAll('#gradeChips [data-gc]')].find(b => /BIO 150/.test(b.textContent)).click()`); await sleep(200);
   await A.js(`(() => { const ins = [...document.querySelectorAll('#scoreRows [data-score]')]; [88, 76].forEach((v, i) => { ins[i].value = v; ins[i].dispatchEvent(new Event('change', { bubbles: true })); }); })()`); await sleep(200);
   const fin = await A.js(`({ title: document.getElementById('finalTitle').textContent, rows: [...document.querySelectorAll('#finalRows .target')].map(t => t.innerText.replace(/\\n+/g, ' ')), note: document.getElementById('finalNote').innerText })`);

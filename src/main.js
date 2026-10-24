@@ -230,6 +230,7 @@ const SAVE_KINDS = {
   ics: { name: 'Calendar', crlf: true },
   json: { name: 'SemesterSync backup' },
   csv: { name: 'Spreadsheet', crlf: true },
+  md: { name: 'Report' },
 };
 ipcMain.handle('file:save', async (_e, { name, text, open }) => {
   const ext = String(name || '').split('.').pop().toLowerCase();
@@ -237,7 +238,7 @@ ipcMain.handle('file:save', async (_e, { name, text, open }) => {
   if (!kind || typeof text !== 'string' || text.length > 100 * 1024 * 1024) return { ok: false };
   const safe = path.basename(String(name)).replace(/[^\w .-]/g, '_').slice(0, 120);
   const { canceled, filePath } = await dialog.showSaveDialog(win, {
-    title: ext === 'ics' ? 'Save calendar file' : ext === 'json' ? 'Save backup' : 'Save spreadsheet',
+    title: ext === 'ics' ? 'Save calendar file' : ext === 'json' ? 'Save backup' : ext === 'md' ? 'Save report' : 'Save spreadsheet',
     defaultPath: path.join(app.getPath('documents'), safe),
     filters: [{ name: kind.name, extensions: [ext] }],
   });
