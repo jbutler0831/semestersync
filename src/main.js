@@ -401,8 +401,9 @@ function smokeTest(w, out) {
   w.webContents.on('console-message', e => { if ((e.level === 'error' || e.level >= 3)) errors.push(String(e.message).slice(0, 300)); });
   w.webContents.once('did-finish-load', () => setTimeout(async () => {
     let page = {};
-    try { page = await w.webContents.executeJavaScript(`({ title: document.title, tabs: document.querySelectorAll('.nav [data-tab]').length, courses: document.querySelectorAll('#coursebar [data-view]').length, rows: document.querySelectorAll('#rows tr').length })`); } catch (e) { errors.push(String(e)); }
-    await fs.writeFile(out, JSON.stringify({ ok: !errors.length && page.tabs === 7 && page.rows > 0, version: app.getVersion(), page, errors }, null, 2));
+    try { page = await w.webContents.executeJavaScript(`({ title: document.title, tabs: document.querySelectorAll('.nav [data-tab]').length, panes: document.querySelectorAll('[data-pane]').length, courses: document.querySelectorAll('#coursebar [data-view]').length, rows: document.querySelectorAll('#rows tr').length })`); } catch (e) { errors.push(String(e)); }
+    // Every tab has its page, and the sample semester rendered.
+    await fs.writeFile(out, JSON.stringify({ ok: !errors.length && page.tabs > 0 && page.tabs === page.panes && page.rows > 0, version: app.getVersion(), page, errors }, null, 2));
     app.exit(0);
   }, 4000));
 }
