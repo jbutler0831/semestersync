@@ -17,6 +17,12 @@ process.env.SUPABASE_URL = 'http://127.0.0.1:9'; // never contacted: the account
 process.env.SUPABASE_ANON_KEY = 'test';
 
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+// Test windows overlap. Windows treats a covered window as hidden and throttles it, which stalls the run.
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+// A stuck step fails the run instead of hanging it.
+setTimeout(() => { console.log('FAIL  test run took over 12 minutes; stopping'); app.exit(1); }, 12 * 60 * 1000).unref();
 const fake = require('./fake-claude');
 fake.serve(54417);
 
@@ -56,9 +62,10 @@ function check(name, ok, detail) {
 function device(win) {
   const errors = [];
   win.webContents.on('console-message', e => { if (e.level === 'error' || e.level >= 3) errors.push(String(e.message).slice(0, 300)); });
-  const js = src => win.webContents.executeJavaScript(src);
+  win.webContents.setBackgroundThrottling(false);
+  const js = src => Promise.race([win.webContents.executeJavaScript(src), new Promise((_, no) => setTimeout(() => no(new Error('page didn’t answer within 20 s: ' + src.slice(0, 80))), 20000))]);
   const until = async (src, ms = 8000) => { const t = Date.now(); let v; while (Date.now() - t < ms) { try { v = await js(src); if (v) return v; } catch (_) {} await sleep(100); } return v; };
-  const loaded = () => new Promise(r => win.webContents.once('did-finish-load', r));
+  const loaded = () => new Promise((ok, no) => { const t = setTimeout(() => no(new Error('page didn’t load within 30 s')), 30000); win.webContents.once('did-finish-load', () => { clearTimeout(t); ok(); }); });
   const reload = async () => { const p = loaded(); win.webContents.reload(); await p; await until(`!!document.querySelector('#coursebar [data-view]')`); await sleep(1200); };
   const click = sel => js(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return false; el.click(); return true; })()`);
   const setVal = (sel, v) => js(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return false; el.value = ${JSON.stringify(v)}; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
@@ -339,6 +346,9 @@ app.on('browser-window-created', (_e, win) => {
     check('no errors in the page console', !errs.length, errs);
     const failed = results.filter(r => !r.ok).length;
     console.log(`\n${results.length - failed} passed, ${failed} failed`);
-    if (!process.argv.includes('--keep')) { fs.rmSync(TMP, { recursive: true, force: true }); app.exit(failed ? 1 : 0); }
+    if (!process.argv.includes('--keep')) {
+      try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) { /* Windows keeps the profile locked until exit */ }
+      app.exit(failed ? 1 : 0);
+    }
   });
 });
