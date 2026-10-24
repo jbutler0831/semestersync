@@ -4,6 +4,19 @@
 
 A Mac and Windows app that turns course syllabi into a semester plan: every dated deliverable, each course's grading breakdown, a workload heatmap that shows where courses collide, and calendar export.
 
+## Install
+
+**Mac:** download `SemesterSync-…-universal.dmg`, open it and drag SemesterSync into Applications. The app isn't signed by Apple yet, so the first time you open it macOS says it "could not verify SemesterSync is free of malware". To open it anyway:
+1. Click **Done** on the warning (not Move to Trash).
+2. Open **System Settings → Privacy & Security**, scroll down to Security and click **Open Anyway** next to *"SemesterSync" was blocked*.
+3. Enter your Mac password and click **Open Anyway** again. You only do this once.
+
+On macOS 14 or earlier, right-click SemesterSync in Applications, choose **Open**, then **Open** again. If neither works, run `xattr -dr com.apple.quarantine /Applications/SemesterSync.app` in Terminal.
+
+**Windows:** download `SemesterSync-Setup-….exe` and run it. If Windows shows "Windows protected your PC", choose **More info → Run anyway**.
+
+Updating keeps your courses, settings and sign-in.
+
 ## What it does
 
 | Tab | What's in it |
@@ -112,7 +125,7 @@ Build each platform on its own OS. The GitHub Actions workflow in `.github/workf
 
 ### Signing the installers
 
-Unsigned builds work, but each OS warns people (Mac: right-click → **Open** the first time; Windows: **More info → Run anyway**). The workflow signs automatically once these **repository secrets** exist (GitHub → Settings → Secrets and variables → Actions):
+Unsigned builds work, but each OS warns people the first time (see [Install](#install) for how to open them). The workflow signs automatically once these **repository secrets** exist (GitHub → Settings → Secrets and variables → Actions):
 
 | Secret | Where it comes from |
 |---|---|

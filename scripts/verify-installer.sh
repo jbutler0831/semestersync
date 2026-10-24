@@ -28,7 +28,7 @@ case "$(uname -s)" in
       echo "Signed: $(codesign -dv "$APP" 2>&1 | grep -m1 Authority=)"
       if spctl --assess --type execute "$APP" 2>/dev/null; then echo "Notarized: Gatekeeper accepts it"; else echo "Not notarized: Gatekeeper will warn"; [ "${REQUIRE_SIGNED:-0}" = 1 ] && fail "not notarized"; fi
     else
-      echo "Not signed with a Developer ID (people need right-click → Open the first time)"
+      echo "Not signed with a Developer ID (people need System Settings → Privacy & Security → Open Anyway the first time)"
       [ "${REQUIRE_SIGNED:-0}" = 1 ] && fail "not signed"
     fi
     "$APP/Contents/MacOS/SemesterSync" >/dev/null 2>&1 &

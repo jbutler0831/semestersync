@@ -87,9 +87,15 @@ jobs:
       - run: |
           (cd installers && sha256sum * > SHA256SUMS.txt)
           cat > notes.md <<'NOTES'
-          **Mac:** download `SemesterSync-*-universal.dmg`, open it and drag SemesterSync into Applications. If the app isn't signed yet, right-click it and choose **Open** the first time.
+          **Mac:** download `SemesterSync-*-universal.dmg`, open it and drag SemesterSync into Applications. The app isn't signed by Apple yet, so the first time you open it macOS says it "could not verify SemesterSync is free of malware". To open it anyway:
+          1. Click **Done** on the warning (not Move to Trash).
+          2. Open **System Settings → Privacy & Security**, scroll down to Security and click **Open Anyway** next to *"SemesterSync" was blocked*.
+          3. Enter your Mac password and click **Open Anyway** again. You only do this once.
+
+          On macOS 14 or earlier, right-click SemesterSync in Applications, choose **Open**, then **Open** again. If neither works, run `xattr -dr com.apple.quarantine /Applications/SemesterSync.app` in Terminal.
 
           **Windows:** download `SemesterSync-Setup-*.exe` and run it. If Windows shows "Windows protected your PC", choose **More info → Run anyway**.
+
 
           `SHA256SUMS.txt` lists a checksum for each file, so you can check a download wasn't damaged or changed.
           NOTES
