@@ -96,7 +96,7 @@ const TYPES = [
   { key: 'Reading',  re: /\b(reading|response|chapter)\b/i,                           base: 1.5, lead: 2 },
   { key: 'Homework', re: /\b(homework|hw|problem set|pset|assignment|exercise|discussion|visit|scribe)\b/i,   base: 3,   lead: 3 },
 ];
-const TYPE_KEYS = TYPES.map(t => t.key).concat('Other');
+const TYPE_KEYS = TYPES.map(t => t.key).concat('Study', 'Other');
 const MONTH = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, oct:9, nov:10, dec:11 };
 const MONTH_SRC = '\\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b';
 const NUM_SRC = '\\b(\\d{1,2})\\/(\\d{1,2})(?:\\/(\\d{2,4}))?\\b';
@@ -125,15 +125,22 @@ const uid = () => Math.random().toString(36).slice(2, 8);
 const state = {
   courses: [], view: 'all', editId: null, gradeId: null,
   sortKey: 'date', sortDir: 1, filter: 'All',
-  freshIds: new Set(), q: '', show: 'all',
+  freshIds: new Set(), q: '', show: 'all', inbox: null,
   parser: 'local', aiReady: false, dirty: false,
 };
 
 /* ---------- Courses ---------- */
-const courseById = id => state.courses.find(c => c.id === id);
+// Captured tasks with no course live in a built-in Inbox course. It's saved and synced like any course,
+// and its items join allItems(), but it never appears in course lists.
+const INBOX_ID = 'inbox';
+const courseById = id => state.courses.find(c => c.id === id) || (id === INBOX_ID && state.inbox ? state.inbox : undefined);
 const editCourse = () => courseById(state.editId) || state.courses[0] || null;
-const colorOf = c => `var(${SERIES[c.color % 8]})`;
-const allItems = () => state.courses.flatMap(c => c.items);
+const colorOf = c => c && c.inbox ? 'var(--faint)' : `var(${SERIES[c.color % 8]})`;
+const allItems = () => state.courses.flatMap(c => c.items).concat(state.inbox ? state.inbox.items : []);
+function ensureInbox() {
+  if (!state.inbox) state.inbox = { id: INBOX_ID, code: 'Inbox', title: 'Tasks without a course', text: '', categories: [], items: [], drafts: [], color: 0, parser: 'local', order: 0, inbox: true };
+  return state.inbox;
+}
 const visibleCourses = () => state.view === 'all' ? state.courses : state.courses.filter(c => c.id === state.view);
 const visibleItems = () => visibleCourses().flatMap(c => c.items);
 const itemCourse = it => courseById(it.cid);
@@ -869,12 +876,12 @@ addEventListener('scroll', hideTip, { passive: true });
 
 /* ---------- Sync ---------- */
 const reminderMins = () => [...document.querySelectorAll('#reminders .chip[aria-pressed="true"]')].map(b => +b.dataset.min);
-const calFor = c => $('perCourse').checked ? `${c.code} · Deadlines` : ($('calName').value.trim() || 'Semester deadlines');
+const calFor = c => $('perCourse').checked ? (c.inbox ? 'Tasks' : `${c.code} · Deadlines`) : ($('calName').value.trim() || 'Semester deadlines');
 function buildEvents() {
   const skipPast = $('skipPast').checked, rem = reminderMins().join(',');
   const evs = [];
   const load = computeLoad(allItems());
-  for (const c of state.courses) for (const it of c.items) {
+  for (const c of state.courses.concat(state.inbox ? [state.inbox] : [])) for (const it of c.items) {
     if (!it.sync || (skipPast && dueDate(it) < TODAY)) continue;
     const cal = calFor(c);
     evs.push({ id: it.id, kind: 'due', when: dueDate(it), time: it.time, title: it.title, it, c, cal, hash: [it.title, it.date, it.time, it.weight, rem, cal].join('|') });
@@ -1003,10 +1010,11 @@ const HERE = window.desktop ? 'on this computer' : 'in this browser';
 const store = { mode: 'none', col: null, base: new Map(), timer: null, status: 'sample', busy: false, uid: null, who: '', signedOut: false, lastOk: null, fails: 0, retryAt: 0, dirtySince: 0, loaded: false, problem: '' };
 const STORE_KEY = 'ssync-courses-v1';
 const CACHE_KEY = 'ssync-account-cache-v1';
-const serialize = c => JSON.stringify({ id: c.id, code: c.code, title: c.title, text: c.text, categories: c.categories, items: c.items, color: c.color, parser: c.parser, order: c.order, credits: c.credits, target: c.target, override: c.override, sample: c.sample || undefined, source: c.source, review: c.review, meets: c.meets, finalId: c.finalId, catAvg: c.catAvg, calc: c.calc });
+const serialize = c => JSON.stringify({ id: c.id, code: c.code, title: c.title, text: c.text, categories: c.categories, items: c.items, color: c.color, parser: c.parser, order: c.order, credits: c.credits, target: c.target, override: c.override, sample: c.sample || undefined, source: c.source, review: c.review, meets: c.meets, finalId: c.finalId, catAvg: c.catAvg, calc: c.calc, inbox: c.inbox || undefined, drafts: c.inbox ? c.drafts : undefined });
 function localDocs() {
   const m = new Map();
   for (const c of state.courses) m.set('course-' + c.id, serialize(c));
+  if (state.inbox) m.set('course-' + INBOX_ID, serialize(state.inbox));
   for (const [id, json] of extraDocs()) m.set(id, json);
   return m;
 }
@@ -1081,6 +1089,11 @@ function applyDocs(adopt) {
   const byId = new Map(state.courses.map(c => [c.id, c]));
   const ex = [];
   for (const [id, json] of adopt) {
+    if (id === 'course-' + INBOX_ID) {
+      if (json === undefined) state.inbox = null;
+      else { try { const c = cleanCourse(JSON.parse(json)); if (c) { state.inbox = c; c.items.forEach(it => { it.cid = INBOX_ID; }); } } catch (_) { /* skip */ } }
+      continue;
+    }
     if (id.startsWith('course-')) {
       const cid = id.slice(7);
       if (json === undefined) { byId.delete(cid); continue; }
@@ -1189,10 +1202,29 @@ function cleanItem(x, cid, n) {
   if (x.backfilled) it.backfilled = true;
   if (x.checked) it.checked = true;
   if (typeof x.scoredAt === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x.scoredAt)) it.scoredAt = x.scoredAt;
+  cleanTaskFields(x, it);
   if (x.score !== null && x.score !== undefined && x.score !== '' && isFinite(+x.score)) it.score = num(x.score, 0, 150, null);
   if (x.spent) it.spent = num(x.spent, 0, 500, 0);
   if (x.locks && typeof x.locks === 'object') { it.locks = {}; for (const [k, h] of Object.entries(x.locks)) if (/^\d{4}-\d{2}-\d{2}$/.test(k) && +h > 0) it.locks[k] = num(h, 0, 16, 0); }
   return it;
+}
+// Fields only captured tasks have: where they came from, the priority you set, when, and review flags.
+function cleanTaskFields(x, it) {
+  if (x.src === 'inbox') it.src = 'inbox';
+  if (['high', 'low'].includes(x.prio)) it.prio = x.prio;
+  if (isFinite(+x.created) && +x.created > 0) it.created = +x.created;
+  if (x.fresh) it.fresh = true;
+  if (typeof x.dupOf === 'string' && /^[\w.-]{1,60}$/.test(x.dupOf)) it.dupOf = x.dupOf;
+  return it;
+}
+// A task still waiting for a due date: same fields as a deliverable, minus the date.
+function cleanDraft(x, n) {
+  if (!x || typeof x !== 'object') return null;
+  const d = { id: /^[\w.-]{1,60}$/.test(x.id) ? x.id : `inbox-d${n}`, cid: typeof x.cid === 'string' && /^[\w-]{1,40}$/.test(x.cid) ? x.cid : null,
+    title: clip(x.title, 120) || 'Untitled task', notes: clip(x.notes, 300), type: TYPE_KEYS.includes(x.type) ? x.type : 'Other',
+    time: /^\d{2}:\d{2}$/.test(x.time) ? x.time : '23:59', hours: num(x.hours, 0, 200, 1), src: 'inbox', input: clip(x.input, 300) };
+  if (x.done) d.done = true;
+  return cleanTaskFields(x, d);
 }
 function cleanCourse(x) {
   if (!x || typeof x !== 'object' || typeof x.id !== 'string' || !/^[\w-]{1,40}$/.test(x.id) || !Array.isArray(x.items)) return null;
@@ -1214,12 +1246,17 @@ function cleanCourse(x) {
   if (x.catAvg && typeof x.catAvg === 'object') { c.catAvg = {}; for (const [k, v] of Object.entries(x.catAvg).slice(0, 30)) if (isFinite(+v)) c.catAvg[clip(k, 80)] = num(v, 0, 150, 0); }
   if (Array.isArray(x.calc)) c.calc = x.calc.slice(0, 20).filter(r => r && typeof r === 'object').map(r => ({ label: clip(r.label, 60) || 'Category', pct: num(r.pct, 0, 100, 0), avg: r.avg === null || r.avg === undefined || r.avg === '' ? null : num(r.avg, 0, 150, null) }));
   if (Array.isArray(x.meets)) c.meets = x.meets.slice(0, 6).filter(m => m && Array.isArray(m.days) && /^\d{2}:\d{2}$/.test(m.start) && /^\d{2}:\d{2}$/.test(m.end)).map(m => ({ days: [...new Set(m.days.map(Number).filter(d => d >= 0 && d <= 6))].sort(), start: m.start, end: m.end, where: clip(m.where, 40), kind: ['Class', 'Lab', 'Discussion'].includes(m.kind) ? m.kind : 'Class' }));
+  if (x.inbox || x.id === INBOX_ID) { c.inbox = true; c.code = 'Inbox'; c.drafts = (Array.isArray(x.drafts) ? x.drafts : []).slice(0, 300).map(cleanDraft).filter(Boolean); }
   if (x.review && typeof x.review === 'object') c.review = { pending: !!x.review.pending, at: num(x.review.at, 0, 1e15, 0) };
   return c;
 }
-function adoptCourses(list) {
-  const courses = list.map(cleanCourse).filter(Boolean).sort((a, b) => (a.order || 0) - (b.order || 0)).slice(0, MAX_COURSES);
+function adoptCourses(list, keepInbox) {
+  const all = list.map(cleanCourse).filter(Boolean);
+  const inbox = all.find(c => c.inbox);
+  const courses = all.filter(c => !c.inbox).sort((a, b) => (a.order || 0) - (b.order || 0)).slice(0, MAX_COURSES);
   state.courses = courses;
+  if (inbox) { inbox.items.forEach(it => { it.cid = INBOX_ID; }); state.inbox = inbox; }
+  else if (!keepInbox) state.inbox = null;
   state.view = 'all'; state.editId = courses[0] ? courses[0].id : null; state.gradeId = state.editId;
   renderAnnotated(false);
   const c = editCourse();
@@ -1317,6 +1354,7 @@ async function initStore() {
   if (store.problem) showProblem(store.problem);
   if (fresh && store.status !== 'retry') maybeOnboard();
   setTimeout(() => { checkReminders(); pushTray(); }, 5000);
+  pushQuickContext(); drainQuick();
 }
 // After loading documents from the account, note what this device's copy of each looks like.
 function fillBase() {
@@ -1433,10 +1471,13 @@ $('removeCourse').onclick = () => {
   }
   removeArmed = null; btn.classList.remove('armed'); btn.textContent = 'Remove course';
   const before = snapshot(`Before removing ${c.code}`);
+  const kept = c.items.filter(i => i.src === 'inbox');
+  if (kept.length) { const ib = ensureInbox(); kept.forEach(i => { i.cid = INBOX_ID; ib.items.push(i); }); }
+  if (state.inbox) state.inbox.drafts.forEach(d => { if (d.cid === c.id) d.cid = null; });
   state.courses = state.courses.filter(x => x !== c);
   state.view = 'all'; state.editId = state.courses[0] ? state.courses[0].id : null; state.gradeId = state.editId;
   selectCourse('all'); markDirty();
-  toast(`Removed ${c.code}`, { label: 'Undo', fn: () => restoreSnapshot(before, true) });
+  toast(`Removed ${c.code}${kept.length ? `. ${kept.length} task${kept.length > 1 ? 's' : ''} you added moved to the Inbox` : ''}`, { label: 'Undo', fn: () => restoreSnapshot(before, true) });
 };
 $('viewAnn').onclick = () => {
   const c = editCourse();
@@ -1651,7 +1692,7 @@ document.querySelectorAll('th[data-sort] button').forEach(b => b.onclick = () =>
   const k = b.parentElement.dataset.sort;
   state.sortDir = state.sortKey === k ? -state.sortDir : (k === 'date' ? 1 : -1); state.sortKey = k; renderTable();
 });
-const findItem = id => { for (const c of state.courses) { const it = c.items.find(i => i.id === id); if (it) return [c, it]; } return [null, null]; };
+const findItem = id => { for (const c of state.courses.concat(state.inbox ? [state.inbox] : [])) { const it = c.items.find(i => i.id === id); if (it) return [c, it]; } return [null, null]; };
 $('rows').addEventListener('change', e => {
   const el = e.target, tr = el.closest('tr'); if (!tr || !el.dataset.k) return;
   const [, it] = findItem(tr.dataset.id); if (!it) return;
@@ -1737,7 +1778,7 @@ function extraDocs() {
   return [['extras', JSON.stringify(extras)], ...decks.map(d => ['deck-' + d.id, JSON.stringify(d)])];
 }
 function saveLocal() {
-  localStorage.setItem(STORE_KEY, JSON.stringify(state.courses.map(serialize)));
+  localStorage.setItem(STORE_KEY, JSON.stringify(state.courses.concat(state.inbox ? [state.inbox] : []).map(serialize)));
   localStorage.setItem(EXTRAS_KEY, JSON.stringify(extraDocs()));
 }
 function adoptExtras(list) {
@@ -1776,7 +1817,7 @@ function adoptExtras(list) {
 }
 
 /* ---------- Tabs ---------- */
-const TABS = ['today', 'semester', 'plan', 'grades', 'study', 'coach', 'rooms', 'insights'];
+const TABS = ['today', 'inbox', 'semester', 'plan', 'grades', 'study', 'coach', 'rooms', 'insights'];
 let tab = 'semester';
 function setTab(t) {
   if (!TABS.includes(t)) t = 'semester';
@@ -1790,10 +1831,10 @@ function setTab(t) {
 }
 document.addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b) { e.preventDefault(); setTab(b.dataset.tab); } });
 function renderTab() {
-  const fn = { today: renderToday, plan: renderPlan, grades: renderGrades, study: renderStudy, coach: renderCoach, rooms: renderRooms, insights: renderInsights }[tab];
+  const fn = { today: renderToday, inbox: renderInbox, plan: renderPlan, grades: renderGrades, study: renderStudy, coach: renderCoach, rooms: renderRooms, insights: renderInsights }[tab];
   if (fn) fn();
 }
-function renderFeatures() { renderTab(); pushTray(); }
+function renderFeatures() { renderTab(); pushTray(); pushQuickContext(); }
 const pendingItems = () => allItems().filter(i => !i.done);
 const remaining = it => Math.max(0, (+it.hours || 0) - (+it.spent || 0));
 const courseOpts = (sel) => state.courses.map(c => `<option value="${c.id}"${c.id === sel ? ' selected' : ''}>${esc(c.code)}${c.title ? ' · ' + esc(c.title.slice(0, 40)) : ''}</option>`).join('');
@@ -1863,7 +1904,9 @@ function priority(it, riskSet) {
     [daysLeft < 0 ? 29 : 14 - daysLeft * 2, daysLeft < 0 ? 'past its due date' : daysLeft === 0 ? 'due today' : daysLeft === 1 ? 'due tomorrow' : `due in ${daysLeft} days`],
     [riskSet.has(it) ? 30 : 0, 'doesn’t fit in your study hours yet'],
     [it.type === 'Exam' ? 10 : 0, 'an exam'],
+    [it.prio === 'high' ? 20 : 0, 'marked high priority'],
   ];
+  if (it.prio === 'low') parts.push([-10, '']);
   const s = parts.reduce((a, [v]) => a + v, 0) - 14;
   const why = parts.filter(([v]) => v > 0).sort((a, b) => b[0] - a[0]).map(([, t]) => t);
   if (!it.weight) why.push('not graded');
@@ -2846,7 +2889,7 @@ const SNAP_KEY = 'ssync-snapshots-v1', DAILY_KEY = 'ssync-daily-v1';
 function backupData() {
   return {
     app: 'SemesterSync', format: 1, exported: new Date().toISOString(),
-    courses: state.courses.map(c => JSON.parse(serialize(c))),
+    courses: state.courses.concat(state.inbox ? [state.inbox] : []).map(c => JSON.parse(serialize(c))),
     extras: JSON.parse(JSON.stringify(extras)),
     decks: decks.map(d => { const { _answers, ...rest } = d; return JSON.parse(JSON.stringify(rest)); }),
   };
@@ -2900,11 +2943,18 @@ function restoreData(b, mode, why) {
     adoptCourses(b.courses);
   } else {
     const have = new Set(state.courses.map(c => c.id)), haveDeck = new Set(decks.map(d => d.id));
-    const add = b.courses.filter(c => !have.has(c.id)).slice(0, Math.max(0, MAX_COURSES - state.courses.length));
+    // Inbox tasks from the backup join this inbox, skipping any already here.
+    const bin = b.courses.find(c => c.inbox);
+    if (bin) {
+      const ib = ensureInbox(), ids = new Set(allItems().map(i => i.id).concat(ib.drafts.map(d => d.id)));
+      bin.items.filter(i => !ids.has(i.id)).forEach(i => { i.cid = INBOX_ID; ib.items.push(i); });
+      bin.drafts.filter(d => !ids.has(d.id)).forEach(d => ib.drafts.push(d));
+    }
+    const add = b.courses.filter(c => !c.inbox && !have.has(c.id)).slice(0, Math.max(0, MAX_COURSES - state.courses.length));
     add.forEach(c => { c.color = nextColor(); state.courses.push(c); });
     adoptExtras([...extraDocs(), ...b.ex.filter(([id]) => id.startsWith('deck-') && !haveDeck.has(id.slice(5)))]);
-    adoptCourses(state.courses.map(c => JSON.parse(serialize(c))));
-    if (b.courses.length > add.length) toast(`${b.courses.length - add.length} course${b.courses.length - add.length > 1 ? 's were' : ' was'} already here or over the ${MAX_COURSES}-course limit`);
+    adoptCourses(state.courses.map(c => JSON.parse(serialize(c))), true);
+    if (b.courses.filter(c => !c.inbox).length > add.length) toast(`${b.courses.length - add.length} course${b.courses.length - add.length > 1 ? 's were' : ' was'} already here or over the ${MAX_COURSES}-course limit`);
   }
   state.dirty = true; markDirty();
   return before;
@@ -2931,7 +2981,7 @@ async function exportBackup() {
 const csvCell = v => { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
 async function exportCsv() {
   const rows = [['Course', 'Course title', 'Deliverable', 'Type', 'Due date', 'Due time', 'Weight %', 'Est. hours', 'Hours logged', 'Done', 'Score %', 'Notes']];
-  for (const c of state.courses) for (const i of c.items.slice().sort((a, b) => a.date.localeCompare(b.date))) rows.push([c.code, c.title, i.title, i.type, i.date, i.time, i.weight, i.hours, i.spent || 0, i.done ? 'yes' : 'no', hasScore(i) ? +i.score : '', i.notes]);
+  for (const c of state.courses.concat(state.inbox ? [state.inbox] : [])) for (const i of c.items.slice().sort((a, b) => a.date.localeCompare(b.date))) rows.push([c.code, c.title, i.title, i.type, i.date, i.time, i.weight, i.hours, i.spent || 0, i.done ? 'yes' : 'no', hasScore(i) ? +i.score : '', i.notes]);
   const res = await saveFile(`SemesterSync-deliverables-${stamp()}.csv`, '﻿' + rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n', 'text/csv');
   if (res === 'saved') toast('Saved the deliverables spreadsheet');
   else if (res === 'unsupported') toast('Saving files isn’t available in this view.');
@@ -3036,7 +3086,7 @@ function openData() {
     const b = q('#dataWipe');
     if (!armed) { armed = true; b.classList.add('armed'); b.textContent = 'Click again to delete everything'; setTimeout(() => { armed = false; if (b.isConnected) { b.classList.remove('armed'); b.textContent = 'Delete everything'; } }, 4000); return; }
     const before = snapshot('Before deleting everything');
-    state.courses = []; resetExtras(); decks = []; deckId = null; review = null;
+    state.courses = []; state.inbox = null; resetExtras(); decks = []; deckId = null; review = null;
     state.view = 'all'; state.editId = null; state.gradeId = null;
     if (window.desktop && window.desktop.sources) window.desktop.sources.clear().catch(() => {});
     dataDlg.close(); state.dirty = true; markDirty(); renderAnnotated(false); renderAll();
@@ -3287,13 +3337,14 @@ function runSearch() {
     const its = allItems().filter(i => { const c = itemCourse(i); return has(`${i.title} ${i.notes} ${i.type} ${c ? c.code : ''} ${fmtDay(dueDate(i))} ${MONTHS_SHORT[dueDate(i).getMonth()]}`); })
       .sort((a, b) => (dueDate(a) < TODAY) - (dueDate(b) < TODAY) || a.date.localeCompare(b.date));
     for (const i of its.slice(0, 30)) qRes.push({ kind: 'item', it: i, label: i.title, sub: `${itemCourse(i).code} · ${i.type} · ${dueLabel(i)}${i.done ? ' · done' : ''}`, c: itemCourse(i) });
+    for (const d of drafts()) if (has(`${d.title} ${d.notes} ${d.type}`)) qRes.push({ kind: 'draft', t: d, label: d.title, sub: `Inbox · no due date yet`, c: taskCourse(d) });
     for (const d of decks) {
       if (has(d.name)) qRes.push({ kind: 'deck', d, label: d.name, sub: `Study set · ${d.cards.length} cards` });
       else { const card = d.cards.find(x => has(`${x.q} ${x.a}`)); if (card) qRes.push({ kind: 'deck', d, label: card.q, sub: `Card in ${d.name}` }); }
     }
   }
   qSel = Math.min(qSel, Math.max(0, qRes.length - 1));
-  $('qList').innerHTML = qRes.slice(0, 40).map((r, i) => `<li role="option" id="qr${i}" aria-selected="${i === qSel}" data-qi="${i}">${r.c ? `<span class="dot" style="background:${colorOf(r.c)}"></span>` : '<span class="dot" style="background:var(--faint)"></span>'}<span><b>${esc(r.label)}</b><small>${esc(r.sub)}</small></span><span class="kind">${r.kind === 'item' ? 'Deliverable' : r.kind === 'course' ? 'Course' : 'Study'}</span></li>`).join('') || (words.length ? '<li class="none">No matches</li>' : '');
+  $('qList').innerHTML = qRes.slice(0, 40).map((r, i) => `<li role="option" id="qr${i}" aria-selected="${i === qSel}" data-qi="${i}">${r.c ? `<span class="dot" style="background:${colorOf(r.c)}"></span>` : '<span class="dot" style="background:var(--faint)"></span>'}<span><b>${esc(r.label)}</b><small>${esc(r.sub)}</small></span><span class="kind">${r.kind === 'item' ? (r.it.src === 'inbox' ? 'Task' : 'Deliverable') : r.kind === 'draft' ? 'Task' : r.kind === 'course' ? 'Course' : 'Study'}</span></li>`).join('') || (words.length ? '<li class="none">No matches</li>' : '');
   $('qIn').setAttribute('aria-activedescendant', qRes.length ? 'qr' + qSel : '');
   const sel = $('qList').querySelector('[aria-selected="true"]'); if (sel) sel.scrollIntoView({ block: 'nearest' });
 }
@@ -3301,6 +3352,13 @@ function openResult(r) {
   if (!r) return;
   searchDlg.close();
   if (r.kind === 'deck') { setTab('study'); deckId = r.d.id; smMode = 'review'; review = null; renderStudy(); return; }
+  if (r.kind === 'draft' || (r.kind === 'item' && r.it.cid === INBOX_ID)) {
+    const id = r.kind === 'draft' ? r.t.id : r.it.id;
+    inboxFilter = 'all'; $('inboxSearch').value = ''; setTab('inbox');
+    const row = document.querySelector(`#inboxList [data-tid="${CSS.escape(id)}"]`);
+    if (row) { row.scrollIntoView({ block: 'center' }); row.classList.add('flash'); setTimeout(() => row.classList.remove('flash'), 1800); }
+    return;
+  }
   setTab('semester');
   const cid = r.kind === 'course' ? r.c.id : r.it.cid;
   state.q = ''; state.show = 'all'; state.filter = 'All'; $('tableSearch').value = ''; $('tableShow').value = 'all';
@@ -3322,10 +3380,12 @@ const keysDlg = makeDialog('keys-dlg');
 function openKeys() {
   const rows = [
     [`${mod} K`, 'Search everything'], ['/', 'Search (when not typing)'],
-    [window.desktop ? `${mod} 1 – 8` : 'Alt 1 – 8', 'Switch tabs'],
+    [window.desktop ? `${mod} 1 – 9` : 'Alt 1 – 9', 'Switch tabs'],
     [`${mod} Enter`, 'Parse the syllabus you’re editing'],
     ['Space · 1 – 4', 'Show answer · rate a flashcard'],
     ...(window.desktop ? [[`${mod} N`, 'New course'], [`${mod} O`, 'Open a syllabus file'], [`${mod} E`, 'Export to calendar'], [`${mod} ⇧ B`, 'Export a backup'], [`${mod} ,`, 'Settings']] : []),
+    ['N', 'Add a task (Inbox)'],
+    ...(window.desktop ? [[quickKeyLabel || 'Not set', 'Quick Add from anywhere on your computer']] : []),
     ['?', 'This list'], ['Esc', 'Close a dialog'],
   ];
   keysDlg.innerHTML = `<form method="dialog"><h2>Keyboard shortcuts</h2><dl class="keys">${rows.map(([k, d]) => `<dt>${k.split(' ').map(x => x === '·' || x === '–' ? x : `<span class="kbd">${esc(x)}</span>`).join(' ')}</dt><dd>${esc(d)}</dd>`).join('')}</dl><div class="actions"><span style="flex:1"></span><button class="btn primary" value="close">Done</button></div></form>`;
@@ -3334,9 +3394,10 @@ function openKeys() {
 document.addEventListener('keydown', e => {
   const typing = e.target.closest && e.target.closest('input, textarea, select, [contenteditable]');
   if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); openSearch(); return; }
-  if (e.altKey && !e.metaKey && !e.ctrlKey && /^Digit[1-8]$/.test(e.code)) { e.preventDefault(); setTab(TABS[+e.code.slice(5) - 1]); return; }
+  if (e.altKey && !e.metaKey && !e.ctrlKey && /^Digit[1-9]$/.test(e.code)) { e.preventDefault(); setTab(TABS[+e.code.slice(5) - 1]); return; }
   if (typing || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
   if (e.key === '/') { e.preventDefault(); openSearch(); }
+  else if (e.key === 'n') { e.preventDefault(); setTab('inbox'); $('qaIn').focus(); }
   else if (e.key === '?') { e.preventDefault(); openKeys(); }
 });
 
@@ -3477,6 +3538,8 @@ function renderToday() {
   // Alerts: overdue, at risk, yesterday's missed work
   const alerts = [];
   if (T.overdue.length) alerts.push(`<div class="banner"><div style="flex:1"><b>${T.overdue.length} deadline${T.overdue.length > 1 ? 's' : ''} passed without being ticked off</b>${T.overdue.slice(0, 4).map(i => `${esc(itemCourse(i).code)} ${esc(i.title)}`).join(', ')}. Tick ${T.overdue.length > 1 ? 'them' : 'it'} off if you handed ${T.overdue.length > 1 ? 'them' : 'it'} in, or ask about a late submission.</div><button type="button" class="btn sm" data-goto="plan">Open plan</button></div>`);
+  const inboxAtt = [...inboxTasks(), ...drafts()].filter(t => !t.done && (!t.date || !taskCourse(t) || t.fresh || t.dupOf)).length;
+  if (inboxAtt) alerts.push(`<div class="banner warn"><div style="flex:1"><b>${inboxAtt} task${inboxAtt > 1 ? 's' : ''} in your Inbox need${inboxAtt > 1 ? '' : 's'} a look</b>Give ${inboxAtt > 1 ? 'them' : 'it'} a due date or a course so ${inboxAtt > 1 ? 'they show' : 'it shows'} up in your plan and reminders.</div><button type="button" class="btn sm" data-goto="inbox">Open Inbox</button></div>`);
   if (T.risk.size) alerts.push(`<div class="banner warn"><div style="flex:1"><b>${T.risk.size} deadline${T.risk.size > 1 ? 's don’t' : ' doesn’t'} fit in your study hours</b>Start the top priorities below today, or add hours on the Plan tab.</div><button type="button" class="btn sm" data-goto="plan">Open plan</button></div>`);
   $('todayAlerts').innerHTML = alerts.join('');
   // Top 3
@@ -3585,7 +3648,7 @@ function checkReminders(force) {
   if (!store.loaded || !R.on || !notifier()) return sent;
   const now = new Date(), nowMs = +now;
   if (!force && (inQuiet(now) || +(R.snooze.all || 0) > nowMs)) return sent;
-  const done = readNotified(), today = iso(TODAY), mine = state.courses.filter(c => !c.sample && !R.muted.includes(c.id));
+  const done = readNotified(), today = iso(TODAY), mine = state.courses.concat(state.inbox ? [state.inbox] : []).filter(c => !c.sample && !R.muted.includes(c.id));
   const items = mine.flatMap(c => c.items).filter(i => !i.done && i.sync !== false);
   const stages = [...R.at].sort((a, b) => b - a);
   for (const it of items) {
@@ -3595,8 +3658,9 @@ function checkReminders(force) {
     if (!hit.length) continue;
     const h = hit[hit.length - 1], key = `${it.id}|${it.date}|${it.time}|${h}`;
     if (done.has(key)) continue;
+    if (sent.length >= 4) continue; // the rest go out at the next check, a minute later
     hit.forEach(x => done.add(`${it.id}|${it.date}|${it.time}|${x}`));
-    if (sent.length < 4) notify(`${itemCourse(it).code}: ${it.title}`, `Due ${untilText(left)} (${dueLabel(it)})${it.weight ? ` · ${it.weight}% of your grade` : ''}${remaining(it) ? ` · about ${fmtH(remaining(it))} h of work left` : ''}`, it.id, sent);
+    notify(`${itemCourse(it).code}: ${it.title}`, `Due ${untilText(left)} (${dueLabel(it)})${it.weight ? ` · ${it.weight}% of your grade` : ''}${remaining(it) ? ` · about ${fmtH(remaining(it))} h of work left` : ''}`, it.id, sent);
   }
   const T = todayData();
   const real = x => x.filter(i => !(itemCourse(i) || {}).sample);
@@ -3958,6 +4022,242 @@ $('repCoach').onclick = () => {
   setTab('coach');
   askCoach(`Here's my weekly report. What went well, what should I change next week, and what should I start first?\n\n${reportText(r)}`);
 };
+
+/* ---------- Assignment Inbox ---------- */
+// Tasks you capture yourself: typed in plain English, reviewed, then saved as ordinary deliverables
+// (in their course, or in the Inbox until they have one). Tasks with no due date wait in the Inbox's
+// drafts until they get one, because every other view needs a date.
+const parseTask = (text, now) => window.SSTaskParse.parseTask(text, { now: now || new Date(), courses: state.courses.map(c => ({ id: c.id, code: c.code, title: c.title })) });
+const inboxTasks = () => allItems().filter(i => i.src === 'inbox');
+const drafts = () => state.inbox ? state.inbox.drafts : [];
+const normTitle = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const taskCourse = t => t.cid && t.cid !== INBOX_ID ? courseById(t.cid) : null;
+function needsAttention(t) {
+  const why = [];
+  if (!t.date) why.push('No due date');
+  if (!taskCourse(t)) why.push('No course');
+  if (t.fresh) why.push('Added from Quick Add');
+  if (t.dupOf) why.push('Possible duplicate');
+  return why;
+}
+function findDuplicate(f, selfId) {
+  const k = normTitle(f.title); if (!k) return null;
+  return [...inboxTasks(), ...allItems().filter(i => i.src !== 'inbox'), ...drafts()].find(x => x.id !== selfId && normTitle(x.title) === k && (x.date || null) === (f.date || null) && !x.done) || null;
+}
+const findTask = id => { const [c, it] = findItem(id); if (it) return { kind: 'item', c, t: it }; const d = drafts().find(x => x.id === id); return d ? { kind: 'draft', t: d } : null; };
+// Saves a reviewed task. New ones get a fresh id; edits keep theirs, so calendar events and history follow them.
+function saveTask(f, existingId, opts = {}) {
+  const prev = existingId ? findTask(existingId) : null;
+  const keep = prev ? prev.t : {};
+  const id = existingId || opts.id || ('q' + uid() + uid());
+  const course = f.cid && courseById(f.cid) && !courseById(f.cid).inbox ? courseById(f.cid) : null;
+  const base = { id, title: clip(f.title, 120) || 'Untitled task', notes: clip(f.notes, 300), type: TYPE_KEYS.includes(f.type) ? f.type : 'Other',
+    time: /^\d{2}:\d{2}$/.test(f.time || '') ? f.time : '23:59', hours: Math.max(0, Math.min(200, +f.hours || 0)), src: 'inbox', created: keep.created || Date.now() };
+  if (f.prio === 'high' || f.prio === 'low') base.prio = f.prio;
+  for (const k of ['done', 'doneAt', 'spent', 'locks', 'score', 'scoredAt', 'weight']) if (keep[k] != null) base[k] = keep[k];
+  if (opts.fresh) base.fresh = true;
+  if (opts.dupOf) base.dupOf = opts.dupOf;
+  // Take it out of where it was.
+  if (prev && prev.kind === 'item') prev.c.items = prev.c.items.filter(i => i !== prev.t);
+  if (prev && prev.kind === 'draft') state.inbox.drafts = state.inbox.drafts.filter(d => d !== prev.t);
+  let saved;
+  if (f.date && /^\d{4}-\d{2}-\d{2}$/.test(f.date)) {
+    const home = course || ensureInbox();
+    saved = Object.assign({ cid: home.id, line: -1, date: f.date, weight: base.weight || 0, conf: 99, sync: true, ungraded: !(base.weight > 0), checked: true }, base);
+    home.items.push(saved);
+  } else {
+    saved = Object.assign({ cid: course ? course.id : null, input: clip(f.input, 300) }, base);
+    ensureInbox().drafts.push(saved);
+  }
+  markDirty(); clearTimeout(store.timer); flushSave(); // saved right away, so closing the app at once can't lose it
+  renderAll();
+  return saved;
+}
+function deleteTask(id) {
+  const p = findTask(id); if (!p) return;
+  let undo;
+  if (p.kind === 'item') { const n = p.c.items.indexOf(p.t); p.c.items.splice(n, 1); undo = () => { p.c.items.splice(n, 0, p.t); }; }
+  else { const n = state.inbox.drafts.indexOf(p.t); state.inbox.drafts.splice(n, 1); undo = () => { state.inbox.drafts.splice(n, 0, p.t); }; }
+  markDirty(); renderAll();
+  toast(`Deleted “${p.t.title}”`, { label: 'Undo', fn: () => { undo(); markDirty(); renderAll(); } });
+}
+
+/* The review form, shared by new tasks and edits */
+let review0 = null; // the task being added from the Inbox field: { f, parsed, dup }
+function taskFormHtml(f, mode, parsed, dup) {
+  const hoursNote = parsed && parsed.hoursFrom === 'input' ? 'from what you typed' : parsed && parsed.hoursFrom === 'pages' ? 'from the length' : parsed ? 'a typical amount; change it if you know better' : '';
+  const choices = parsed && parsed.courseChoices.length ? parsed.courseChoices : [];
+  return `<div class="tform" data-mode="${mode}">
+    ${mode === 'new' ? `<p class="note">You typed: <b>${esc(parsed ? parsed.input : f.input || '')}</b>. Check the details, then save.</p>` : ''}
+    <div class="tgrid">
+      <div class="field wide"><label>Title</label><input class="inline-in" data-tf="title" value="${esc(f.title)}" maxlength="120" required></div>
+      <div class="field"><label>Course</label><select class="inline-in" data-tf="cid"><option value="">No course yet</option>${state.courses.map(c => `<option value="${c.id}"${c.id === f.cid ? ' selected' : ''}>${esc(c.code)}${choices.includes(c.id) ? ' (matches)' : ''}</option>`).join('')}</select></div>
+      <div class="field"><label>Type</label><select class="inline-in" data-tf="type">${TYPE_KEYS.map(t => `<option${t === f.type ? ' selected' : ''}>${t === 'Study' ? 'Study' : t}</option>`).join('')}</select></div>
+      <div class="field"><label>Due date</label><input class="inline-in" type="date" data-tf="date" value="${f.date || ''}"></div>
+      <div class="field"><label>Time</label><input class="inline-in" type="time" data-tf="time" value="${f.time || '23:59'}"></div>
+      <div class="field"><label>Estimated time (hours)</label><input class="inline-in" type="number" min="0" max="200" step="0.25" data-tf="hours" value="${f.hours ?? ''}">${hoursNote ? `<small class="hint-s">${esc(hoursNote)}</small>` : ''}</div>
+      <div class="field"><label>Priority</label><div class="seg" role="group" aria-label="Priority">${[['low', 'Low'], ['normal', 'Normal'], ['high', 'High']].map(([k, l]) => `<button type="button" data-prio="${k}" aria-pressed="${(f.prio || 'normal') === k}">${l}</button>`).join('')}</div></div>
+      <div class="field wide"><label>Notes</label><input class="inline-in" data-tf="notes" value="${esc(f.notes || '')}" maxlength="300" placeholder="Optional"></div>
+    </div>
+    ${parsed && parsed.dateChoices.length ? `<div class="tchoice"><span>${esc(parsed.dateNote)}</span>${parsed.dateChoices.map(c => `<button type="button" class="chip" data-pickdate="${c.date}" aria-pressed="${f.date === c.date}">${esc(c.label)}</button>`).join('')}</div>` : ''}
+    ${parsed && parsed.courseNote ? `<p class="note warn-t">${esc(parsed.courseNote)}</p>` : ''}
+    ${parsed && parsed.dateNote && !parsed.dateChoices.length ? `<p class="note">${esc(parsed.dateNote)}</p>` : ''}
+    ${dup ? `<p class="note warn-t">You already have “${esc(dup.title)}”${dup.date ? ` due ${esc(dueLabel(dup))}` : ''}${taskCourse(dup) ? ` in ${esc(taskCourse(dup).code)}` : ''}. Save it again anyway?</p>` : ''}
+    <div class="row-btns"><button type="button" class="btn primary" data-tsave>${dup ? 'Save anyway' : !f.date ? 'Save without a date' : mode === 'new' ? 'Save task' : 'Save changes'}</button><button type="button" class="btn ghost" data-tcancel>Cancel</button>${!f.date ? '<span class="note">It waits in the Inbox until you add a date.</span>' : ''}</div>
+  </div>`;
+}
+function readForm(box, f) {
+  const q = k => box.querySelector(`[data-tf="${k}"]`);
+  return { ...f, title: q('title').value.trim(), cid: q('cid').value || null, type: q('type').value, date: q('date').value || null, time: q('time').value || '23:59', hours: q('hours').value === '' ? null : +q('hours').value, notes: q('notes').value.trim(), prio: (box.querySelector('[data-prio][aria-pressed="true"]') || {}).dataset?.prio || 'normal' };
+}
+function startReview(text) {
+  const p = parseTask(text);
+  review0 = { parsed: p, f: { input: p.input, title: p.title, cid: p.cid, type: p.type, date: p.date, time: p.time || '23:59', hours: p.hours, notes: p.notes, prio: p.prio }, dup: null };
+  paintReview();
+  const t = $('qaReview').querySelector(p.dateChoices.length ? '[data-pickdate]' : '[data-tf="title"]'); if (t) t.focus();
+}
+function paintReview() {
+  const box = $('qaReview');
+  box.hidden = !review0;
+  box.innerHTML = review0 ? taskFormHtml(review0.f, 'new', review0.parsed, review0.dup) : '';
+}
+function formClick(e, box, f, onSave, onCancel) {
+  const pr = e.target.closest('[data-prio]');
+  if (pr) { box.querySelectorAll('[data-prio]').forEach(b => b.setAttribute('aria-pressed', b === pr)); return; }
+  const pd = e.target.closest('[data-pickdate]');
+  if (pd) { box.querySelector('[data-tf="date"]').value = pd.dataset.pickdate; box.querySelectorAll('[data-pickdate]').forEach(b => b.setAttribute('aria-pressed', b === pd)); const s = box.querySelector('[data-tsave]'); if (s && /without a date/.test(s.textContent)) s.textContent = 'Save task'; return; }
+  if (e.target.closest('[data-tsave]')) { const v = readForm(box, f); if (!v.title) { box.querySelector('[data-tf="title"]').focus(); toast('Add a title first'); return; } onSave(v); return; }
+  if (e.target.closest('[data-tcancel]')) onCancel();
+}
+$('qaReview').addEventListener('click', e => formClick(e, $('qaReview'), review0 && review0.f, v => {
+  const dup = findDuplicate(v);
+  if (dup && !(review0.dup && review0.dup.id === dup.id)) { review0.f = v; review0.dup = dup; paintReview(); return; }
+  const t = saveTask(v, null, dup ? { dupOf: dup.id } : {});
+  review0 = null; $('qaIn').value = ''; paintReview();
+  toast(t.date ? `Saved “${t.title}”${taskCourse(t) ? ` to ${taskCourse(t).code}` : ' to the Inbox'}` : `Saved “${t.title}”. Add a due date when you know it.`);
+  $('qaIn').focus();
+}, () => { review0 = null; paintReview(); $('qaIn').focus(); }));
+$('qaReview').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey || e.target.matches('input:not([type=date]):not([type=time])'))) { e.preventDefault(); $('qaReview').querySelector('[data-tsave]').click(); }
+  else if (e.key === 'Escape') { e.preventDefault(); $('qaReview').querySelector('[data-tcancel]').click(); }
+});
+$('qaForm').onsubmit = e => { e.preventDefault(); const v = $('qaIn').value.trim(); if (!v) { $('qaIn').focus(); return; } startReview(v); };
+
+/* The list */
+let inboxFilter = 'all', inboxShowDone = false, editingId = null;
+function renderInbox() {
+  const all = [...inboxTasks(), ...drafts()];
+  const q = ($('inboxSearch').value || '').trim().toLowerCase();
+  const att = all.filter(t => !t.done && needsAttention(t).length);
+  const unassigned = all.filter(t => !t.done && !taskCourse(t));
+  $('inboxFilters').innerHTML = [['all', 'All', all.filter(t => !t.done).length], ['attention', 'Needs attention', att.length], ['unassigned', 'No course', unassigned.length], ['done', 'Done', all.filter(t => t.done).length]]
+    .map(([k, l, n]) => `<button type="button" class="chip" data-if="${k}" aria-pressed="${inboxFilter === k}">${l}<span class="c">${n}</span></button>`).join('');
+  let list = all.filter(t => inboxFilter === 'done' ? t.done : !t.done);
+  if (inboxFilter === 'attention') list = list.filter(t => needsAttention(t).length);
+  if (inboxFilter === 'unassigned') list = list.filter(t => !taskCourse(t));
+  if (q) list = list.filter(t => `${t.title} ${t.notes} ${t.type} ${taskCourse(t) ? taskCourse(t).code : ''}`.toLowerCase().includes(q));
+  const groupOf = t => t.done ? 'Done' : !t.date ? 'Needs a date' : dueDate(t) < TODAY ? 'Overdue' : t.date === iso(TODAY) ? 'Today' : 'Upcoming';
+  const order = ['Needs a date', 'Overdue', 'Today', 'Upcoming', 'Done'];
+  list.sort((a, b) => order.indexOf(groupOf(a)) - order.indexOf(groupOf(b)) || (a.date || '').localeCompare(b.date || '') || (a.created || 0) - (b.created || 0));
+  const now = new Date();
+  const row = t => {
+    if (t.id === editingId) return `<div class="irow editing" data-tid="${t.id}">${taskFormHtml({ ...t, cid: taskCourse(t) ? taskCourse(t).id : null }, 'edit', null, null)}</div>`;
+    const c = taskCourse(t), g = groupOf(t), att2 = needsAttention(t);
+    return `<div class="irow${t.done ? ' done' : ''}" data-tid="${t.id}">
+      <input type="checkbox" data-tdone ${t.done ? 'checked' : ''} aria-label="Mark ${esc(t.title)} done">
+      <div class="t"><span class="tt">${esc(t.title)}</span>
+        <small>${c ? tagHtml(c) : '<span class="badge-s none">No course</span>'}
+          ${t.date ? `<span class="${g === 'Overdue' ? 'badge-s crit' : g === 'Today' ? 'badge-s warn' : 'due'}">${g === 'Overdue' ? 'Overdue · ' : g === 'Today' ? 'Today · ' : ''}${esc(dueLabel(t))}</span>` : '<span class="badge-s none">No date</span>'}
+          <span>${esc(t.type)}</span>${t.hours ? `<span>~${fmtDur(t.hours)}${t.spent ? `, ${fmtDur(+t.spent)} done` : ''}</span>` : ''}
+          ${t.fresh ? '<span class="badge-s new">New from Quick Add</span>' : ''}${t.dupOf ? '<span class="badge-s warn">Possible duplicate</span>' : ''}
+        </small>${t.notes ? `<small class="nt">${esc(t.notes)}</small>` : ''}</div>
+      <div class="acts">
+        ${t.prio === 'high' ? '<span class="pri crit">High</span>' : t.prio === 'low' ? '<span class="pri">Low</span>' : ''}
+        ${!c && !t.done ? `<select class="inline-in mini" data-tmove aria-label="Move ${esc(t.title)} to a course"><option value="">Move to course…</option>${state.courses.map(x => `<option value="${x.id}">${esc(x.code)}</option>`).join('')}</select>` : ''}
+        ${t.date && !t.done && remaining(t) > 0 ? `<button type="button" class="btn sm ghost" data-tplan title="Book time for this today in your plan">Plan today</button>` : ''}
+        ${t.fresh || t.dupOf ? `<button type="button" class="btn sm ghost" data-tok title="Mark as reviewed">Looks right</button>` : ''}
+        <button type="button" class="icon-btn" data-tedit aria-label="Edit ${esc(t.title)}" title="Edit"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 2.5l3 3L6 13H3v-3z"/></svg></button>
+        <button type="button" class="icon-btn" data-tdel aria-label="Delete ${esc(t.title)}" title="Delete"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+      </div>
+      ${att2.length && !t.done ? `<div class="why-att">${att2.map(esc).join(' · ')}</div>` : ''}
+    </div>`;
+  };
+  let html = '', last = '';
+  for (const t of list) { const g = groupOf(t); if (g !== last) { html += `<h3 class="igroup">${g}</h3>`; last = g; } html += row(t); }
+  $('inboxList').innerHTML = html || `<div class="empty">${all.length ? (q ? `Nothing matches “${esc(q)}”.` : inboxFilter === 'attention' ? 'Nothing needs attention. Every task has a course and a date.' : inboxFilter === 'done' ? 'Nothing done yet.' : 'All caught up.') : 'Nothing here yet. Type a task above, like “Read chapter 5 for history by Thursday”.'}</div>`;
+  const n = att.length;
+  document.querySelectorAll('[data-tab="inbox"] .nbadge').forEach(b => b.remove());
+  if (n) document.querySelectorAll('[data-tab="inbox"]').forEach(b => b.insertAdjacentHTML('beforeend', `<span class="nbadge" aria-label="${n} need attention">${n}</span>`));
+  $('qaHint').innerHTML = window.desktop ? `Press Enter to review it before it’s saved. From anywhere on your computer: <span class="kbd" id="qaKey">${esc(quickKeyLabel)}</span>` : 'Press Enter to review it before it’s saved.';
+}
+let quickKeyLabel = '';
+$('inboxFilters').addEventListener('click', e => { const b = e.target.closest('[data-if]'); if (b) { inboxFilter = b.dataset.if; renderInbox(); } });
+$('inboxSearch').addEventListener('input', renderInbox);
+$('inboxList').addEventListener('click', e => {
+  const host = e.target.closest('[data-tid]'); if (!host) return;
+  const p = findTask(host.dataset.tid); if (!p) return;
+  const t = p.t;
+  if (host.classList.contains('editing')) {
+    formClick(e, host, { ...t }, v => {
+      const dup = findDuplicate(v, t.id);
+      saveTask(v, t.id, dup ? { dupOf: dup.id } : {});
+      editingId = null; renderAll(); toast('Saved');
+    }, () => { editingId = null; renderInbox(); });
+    return;
+  }
+  if (e.target.matches('[data-tdone]')) {
+    if (p.kind === 'item') { setDone(t, e.target.checked); return; }
+    t.done = e.target.checked || undefined; if (!t.done) delete t.done; markDirty(); renderAll(); return;
+  }
+  if (e.target.closest('[data-tedit]')) { editingId = t.id; renderInbox(); const i = $('inboxList').querySelector('.editing [data-tf="title"]'); if (i) i.focus(); return; }
+  if (e.target.closest('[data-tdel]')) { deleteTask(t.id); return; }
+  if (e.target.closest('[data-tok]')) { delete t.fresh; delete t.dupOf; markDirty(); renderAll(); return; }
+  if (e.target.closest('[data-tplan]')) {
+    const k = iso(TODAY), cap = +extras.planner.hours[(TODAY.getDay() + 6) % 7] || 1;
+    t.locks = t.locks || {}; t.locks[k] = Math.max(0.25, Math.min(remaining(t), cap, 2));
+    markDirty(); renderAll(); toast(`Booked ${fmtDur(t.locks[k])} for “${t.title}” today. It’s locked in your plan.`, { label: 'Open plan', fn: () => setTab('plan') });
+  }
+});
+$('inboxList').addEventListener('change', e => {
+  const sel = e.target.closest('[data-tmove]'); if (!sel || !sel.value) return;
+  const p = findTask(e.target.closest('[data-tid]').dataset.tid); if (!p) return;
+  const t = p.t, c = courseById(sel.value);
+  saveTask({ ...t, cid: sel.value, date: t.date || null }, t.id);
+  toast(`Moved “${t.title}” to ${c.code}`);
+});
+$('inboxList').addEventListener('keydown', e => {
+  const host = e.target.closest('.editing'); if (!host) return;
+  if (e.key === 'Enter' && e.target.matches('input:not([type=date]):not([type=time])')) { e.preventDefault(); host.querySelector('[data-tsave]').click(); }
+  else if (e.key === 'Escape') { e.preventDefault(); host.querySelector('[data-tcancel]').click(); }
+});
+
+/* Tasks from the Quick Add window (desktop). Main keeps them on disk until this page confirms it has saved them. */
+function addQuickTask(q) {
+  if (!q || typeof q !== 'object' || typeof q.id !== 'string' || !/^[\w.-]{1,60}$/.test(q.id)) return false;
+  if (findTask(q.id)) return true; // already here: a repeat delivery
+  const f = { input: clip(q.input, 300), title: clip(q.title, 120), cid: q.cid && state.courses.some(c => c.id === q.cid) ? q.cid : null, type: q.type, date: /^\d{4}-\d{2}-\d{2}$/.test(q.date || '') ? q.date : null, time: q.time, hours: q.hours, notes: q.notes, prio: q.prio };
+  if (!f.title) return true;
+  const dup = findDuplicate(f);
+  saveTask(f, null, { id: q.id, fresh: true, ...(dup ? { dupOf: dup.id } : {}) });
+  return true;
+}
+function pushQuickContext() {
+  if (!window.desktop || !window.desktop.quick) return;
+  try { window.desktop.quick.context({ courses: state.courses.map(c => ({ id: c.id, code: c.code, title: c.title })) }); } catch (_) {}
+}
+async function drainQuick() {
+  if (!window.desktop || !window.desktop.quick) return;
+  try {
+    const list = await window.desktop.quick.drain();
+    for (const q of list || []) if (addQuickTask(q)) window.desktop.quick.ack(q.id);
+    if (list && list.length) toast(`${list.length} task${list.length > 1 ? 's' : ''} added from Quick Add`, { label: 'Open Inbox', fn: () => setTab('inbox') });
+  } catch (_) {}
+}
+if (window.desktop && window.desktop.quick) {
+  window.desktop.onMenu('quick-task', q => { if (store.loaded && addQuickTask(q)) { window.desktop.quick.ack(q.id); if (tab === 'inbox') renderInbox(); } });
+  window.desktop.quick.status().then(s => { quickKeyLabel = s && s.label || ''; if (tab === 'inbox') renderInbox(); }).catch(() => {});
+  window.desktop.onMenu('quick-status', s => { quickKeyLabel = s && s.label || ''; if (tab === 'inbox') renderInbox(); });
+}
 
 /* ---------- Boot: sample courses render at once; saved ones replace them when the store answers ---------- */
 for (const text of SAMPLES) { const c = addCourse(text); applyResult(c, parseLocal(text, c.id), 'local'); c.sample = true; }

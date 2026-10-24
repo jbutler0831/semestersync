@@ -165,7 +165,7 @@
 
     // Effort: what was typed, else from the length, else a typical amount for the type.
     if (out.hours == null) {
-      if (pages && (out.type === 'Paper' || out.type === 'Other' || out.type === 'Homework')) { out.hours = Math.min(20, Math.max(1, pages)); out.hoursFrom = 'pages'; }
+      if (pages && ['Paper', 'Lab', 'Other', 'Homework', 'Project'].includes(out.type)) { out.hours = Math.min(20, Math.max(1, pages)); out.hoursFrom = 'pages'; }
       else if (pages && out.type === 'Reading') { out.hours = Math.max(0.5, Math.round(pages / 15 * 2) / 2); out.hoursFrom = 'pages'; }
       else if (words) { out.hours = Math.min(20, Math.max(1, Math.round(words / 400 * 2) / 2)); out.hoursFrom = 'pages'; }
       else { out.hours = BASE[out.type] || 2; out.hoursFrom = 'type'; }
