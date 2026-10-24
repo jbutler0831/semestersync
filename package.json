@@ -1,7 +1,7 @@
 {
   "name": "semestersync",
   "productName": "SemesterSync",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "Turn course syllabi into a semester schedule: deliverables, grade weights, workload heatmap and calendar export.",
   "main": "src/main.js",
   "author": "Jorel Butler",
@@ -12,7 +12,8 @@
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
     "dist": "electron-builder --mac --win",
-    "test": "node test/static.test.js && electron test/e2e.js"
+    "test": "node test/static.test.js && node test/taskparse.test.js && electron test/e2e.js",
+    "test:parse": "node test/taskparse.test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.132.0",

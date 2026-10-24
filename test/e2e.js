@@ -16,7 +16,7 @@ process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:54417';
 process.env.SUPABASE_URL = 'http://127.0.0.1:9'; // never contacted: the account handlers below replace it
 process.env.SUPABASE_ANON_KEY = 'test';
 
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, globalShortcut } = require('electron');
 // Test windows overlap. Windows treats a covered window as hidden and throttles it, which stalls the run.
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
@@ -340,6 +340,9 @@ async function phaseLocal(A) {
   await A.js(`document.querySelector('#smBody [data-q="2"]').click()`); await sleep(100);
   check('rating it finishes the review', /1 card reviewed/.test(await A.js(`document.getElementById('smBody').innerText`)));
 
+  await phaseInbox(A);
+  await phaseWeak(A);
+
   console.log('\n# Search and keyboard');
   await A.key('k', { meta: true, ctrl: process.platform !== 'darwin' });
   check('Ctrl/⌘ K opens search', await A.until(`!!document.querySelector('dialog.search-dlg[open]')`, 2000));
@@ -348,8 +351,8 @@ async function phaseLocal(A) {
   check('search finds deliverables across courses', res.some(r => /Midterm/i.test(r)), res);
   await A.js(`document.getElementById('qIn').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))`); await sleep(400);
   check('opening a result jumps to its row', await A.js(`!document.querySelector('dialog.search-dlg[open]') && !!document.querySelector('#rows tr.flash')`));
-  await A.key('4', { alt: true, code: 'Digit4' }); await sleep(200);
-  check('Alt+4 switches to Grades', (await A.js(`document.querySelector('.nav .on').textContent`)) === 'Grades');
+  await A.key('5', { alt: true, code: 'Digit5' }); await sleep(200);
+  check('Alt+5 switches to Grades', (await A.js(`document.querySelector('.nav .on').textContent`)) === 'Grades');
   await A.key('?'); await sleep(200);
   check('? lists the shortcuts', await A.js(`!!document.querySelector('dialog.keys-dlg[open]')`));
   await A.js(`document.querySelector('dialog.keys-dlg').close()`);
@@ -360,13 +363,218 @@ async function phaseLocal(A) {
   await A.setVal('#tableSearch', '');
 }
 
+const dayPlus = n => { const d = new Date(); d.setDate(d.getDate() + n); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+async function addTask(D, text) {
+  await D.js(`document.querySelector('.nav [data-tab="inbox"]').click()`);
+  await D.setVal('#qaIn', text);
+  await D.js(`document.getElementById('qaForm').requestSubmit()`); await sleep(150);
+  return D.js(`(() => { const q = k => document.querySelector('#qaReview [data-tf="' + k + '"]'); return { title: q('title') && q('title').value, course: q('cid') && q('cid').selectedOptions[0].textContent, date: q('date') && q('date').value, type: q('type') && q('type').value, notes: q('notes') && q('notes').value, hours: q('hours') && q('hours').value, text: document.getElementById('qaReview').innerText, save: document.querySelector('#qaReview [data-tsave]') && document.querySelector('#qaReview [data-tsave]').textContent }; })()`);
+}
+const inboxRows = D => D.js(`[...document.querySelectorAll('#inboxList .irow')].map(r => r.innerText.replace(/\\s+/g, ' '))`);
+const rowAction = (D, title, sel) => D.js(`(() => { const r = [...document.querySelectorAll('#inboxList .irow')].find(x => x.querySelector('.tt') && x.querySelector('.tt').textContent === ${JSON.stringify(title)}); const b = r && r.querySelector(${JSON.stringify(sel)}); if (!b) return false; b.click(); return true; })()`);
+
+async function phaseInbox(A) {
+  console.log('\n# Assignment Inbox: capture and review');
+  const r1 = await addTask(A, 'BIO lab writeup in 2 days, 3 pages');
+  check('plain English is read into fields to review', r1.title === 'BIO lab writeup' && r1.course === 'BIO 150' && r1.date === dayPlus(2) && r1.type === 'Lab' && r1.notes === '3 pages' && +r1.hours === 3, r1);
+  check('the original text is shown until saved', /You typed: BIO lab writeup in 2 days, 3 pages/.test(r1.text) && (await A.js(`document.getElementById('qaIn').value`)) === 'BIO lab writeup in 2 days, 3 pages');
+  await A.click('#qaReview [data-tsave]'); await sleep(300);
+  check('saving clears the field and lists the task', (await A.js(`document.getElementById('qaIn').value`)) === '' && (await inboxRows(A)).some(r => /BIO lab writeup/.test(r) && /BIO 150/.test(r)));
+  await A.js(`document.querySelector('.nav [data-tab="semester"]').click(); [...document.querySelectorAll('#coursebar [data-view]')].find(b => /BIO 150/.test(b.textContent)).click()`); await sleep(200);
+  check('a task with a course joins that course’s deliverables', (await A.js(`[...document.querySelectorAll('#rows [data-k="title"]')].map(i => i.value)`)).includes('BIO lab writeup'));
+  await A.js(`document.querySelector('.nav [data-tab="today"]').click()`); await sleep(200);
+  check('it shows in Today’s “Due next”', /BIO lab writeup/.test(await A.js(`document.getElementById('todayDue').innerText`)));
+  await A.js(`document.querySelector('.nav [data-tab="plan"]').click()`); await sleep(200);
+  check('and in the Plan’s deadlines and study days', /BIO lab writeup/.test(await A.js(`document.getElementById('deadlines').innerText`)) && /BIO lab writeup/.test(await A.js(`document.getElementById('planDays').innerText`)));
+
+  const r2 = await addTask(A, 'Read the article next week');
+  check('an ambiguous date is offered as choices, not filled in', r2.date === '' && /doesn’t say which day/.test(r2.text) && r2.save === 'Save without a date', r2);
+  await A.js(`document.querySelectorAll('#qaReview [data-pickdate]')[1].click()`);
+  check('picking a choice fills the date', (await A.js(`document.querySelector('#qaReview [data-tf="date"]').value`)) !== '' && (await A.js(`document.querySelector('#qaReview [data-tsave]').textContent`)) === 'Save task');
+  await A.click('#qaReview [data-tcancel]');
+  check('cancel keeps what was typed', (await A.js(`document.getElementById('qaIn').value`)) === 'Read the article next week' && await A.js(`document.getElementById('qaReview').hidden`));
+
+  const r3 = await addTask(A, 'Read chapter 9');
+  check('no date: it can still be saved', r3.date === '' && r3.save === 'Save without a date' && /No due date/.test(r3.text) === false || r3.save === 'Save without a date', r3);
+  await A.click('#qaReview [data-tsave]'); await sleep(300);
+  let rows = await inboxRows(A);
+  check('it waits under “Needs a date”', (await A.js(`document.getElementById('inboxList').innerText`)).includes('NEEDS A DATE') || /Needs a date/i.test(await A.js(`document.getElementById('inboxList').innerText`)));
+  check('and is flagged: no date, no course', rows.some(r => /Read chapter 9/.test(r) && /No date/.test(r) && /No course/.test(r)), rows);
+  await A.js(`document.querySelector('.nav [data-tab="today"]').click()`); await sleep(200);
+  check('Today points to tasks that need a look', /in your Inbox need/.test(await A.js(`document.getElementById('todayAlerts').innerText`)));
+  await A.js(`document.querySelector('.nav [data-tab="inbox"]').click()`); await sleep(100);
+  await rowAction(A, 'Read chapter 9', '[data-tedit]'); await sleep(100);
+  await A.js(`(() => { const f = document.querySelector('#inboxList .editing'); f.querySelector('[data-tf="date"]').value = '${dayPlus(1)}'; f.querySelector('[data-tsave]').click(); })()`); await sleep(300);
+  rows = await inboxRows(A);
+  check('giving it a date moves it into the schedule', rows.some(r => /Read chapter 9/.test(r) && !/No date/.test(r)) && (await A.js(`document.getElementById('todayDue') && 1`)) === 1);
+
+  const r4 = await addTask(A, 'Astronomy homework tomorrow');
+  check('an unknown course is left unassigned', r4.course === 'No course yet' && r4.title === 'Astronomy homework', r4);
+  await A.click('#qaReview [data-tsave]'); await sleep(300);
+  const r5 = await addTask(A, 'Astronomy homework tomorrow');
+  check('a duplicate is caught before saving', /You already have “Astronomy homework”/.test(r5.text) || (await A.js(`document.getElementById('qaReview').innerText`)).includes('already have') || (await A.click('#qaReview [data-tsave]'), await sleep(200), /already have/.test(await A.js(`document.getElementById('qaReview').innerText`))));
+  if (!(await A.js(`document.getElementById('qaReview').hidden`))) { await A.click('#qaReview [data-tsave]'); await sleep(300); }
+  rows = await inboxRows(A);
+  check('“Save anyway” keeps both and marks the copy', rows.filter(r => /Astronomy homework/.test(r)).length === 2 && rows.some(r => /Possible duplicate/.test(r)), rows);
+  await A.js(`(() => { const r = [...document.querySelectorAll('#inboxList .irow')].filter(x => /Astronomy homework/.test(x.innerText)).pop(); r.querySelector('[data-tdel]').click(); })()`); await sleep(200);
+  check('deleting works', (await inboxRows(A)).filter(r => /Astronomy homework/.test(r)).length === 1);
+  await A.click('#toast .toast-act'); await sleep(200);
+  check('and can be undone', (await inboxRows(A)).filter(r => /Astronomy homework/.test(r)).length === 2);
+  await A.js(`(() => { const r = [...document.querySelectorAll('#inboxList .irow')].filter(x => /Astronomy homework/.test(x.innerText)).pop(); r.querySelector('[data-tdel]').click(); })()`); await sleep(200);
+  await A.js(`(() => { const r = [...document.querySelectorAll('#inboxList .irow')].find(x => /Astronomy homework/.test(x.innerText)); const s = r.querySelector('[data-tmove]'); s.value = [...s.options].find(o => o.textContent === 'HIST 101').value; s.dispatchEvent(new Event('change', { bubbles: true })); })()`); await sleep(300);
+  rows = await inboxRows(A);
+  check('“Move to course” links it to the course', rows.some(r => /Astronomy homework/.test(r) && /HIST 101/.test(r)), rows);
+
+  console.log('\n# Inbox: completing, planning, calendar, reminders');
+  await A.js(`(() => { const r = [...document.querySelectorAll('#inboxList .irow')].find(x => /BIO lab writeup/.test(x.innerText)); r.querySelector('[data-tplan]').click(); })()`); await sleep(300);
+  await A.js(`document.querySelector('.nav [data-tab="plan"]').click()`); await sleep(200);
+  check('“Plan today” books locked time for it today', await A.js(`[...document.querySelectorAll('#planDays .day.today .blk.locked')].some(b => /BIO lab writeup/.test(b.innerText))`));
+  await A.js(`document.querySelector('.nav [data-tab="inbox"]').click()`); await sleep(100);
+  await rowAction(A, 'Read chapter 9', '[data-tdone]'); await sleep(300);
+  await A.js(`document.querySelector('.nav [data-tab="today"]').click()`); await sleep(200);
+  check('completing a task updates Today at once', !/Read chapter 9/.test(await A.js(`document.getElementById('todayDue').innerText`)));
+  await A.js(`document.querySelector('.nav [data-tab="inbox"]').click(); document.querySelector('#inboxFilters [data-if="done"]').click()`); await sleep(100);
+  await rowAction(A, 'Read chapter 9', '[data-tdone]'); await sleep(300);
+  await A.js(`document.querySelector('#inboxFilters [data-if="all"]').click()`);
+  check('and reopening brings it back', (await inboxRows(A)).some(r => /Read chapter 9/.test(r)));
+  await A.js(`document.querySelector('.nav [data-tab="semester"]').click()`); await sleep(100);
+  const diff1 = await A.js(`document.getElementById('diff').innerText`);
+  saved.length = 0; await A.click('#syncBtn'); await sleep(500);
+  const ics = saved[0] ? fs.readFileSync(saved[0], 'utf8') : '';
+  check('new tasks go into the calendar export once each', /\+\d+ new/.test(diff1) && (ics.match(/SUMMARY:BIO 150: BIO lab writeup/g) || []).length === 1, { diff1, n: (ics.match(/BIO lab writeup/g) || []).length });
+  await A.js(`document.querySelector('.nav [data-tab="inbox"]').click()`); await rowAction(A, 'BIO lab writeup', '[data-tedit]'); await sleep(100);
+  await A.js(`(() => { const f = document.querySelector('#inboxList .editing'); f.querySelector('[data-tf="title"]').value = 'BIO lab write-up (final)'; f.querySelector('[data-tsave]').click(); })()`); await sleep(300);
+  await A.js(`document.querySelector('.nav [data-tab="semester"]').click()`); await sleep(100);
+  const diff2 = await A.js(`document.getElementById('diff').innerText`);
+  check('editing a task updates its calendar event instead of adding another', /~\d+ changed/.test(diff2) && !/new/.test(diff2), diff2);
+  await A.js(`localStorage.removeItem('ssync-notified-v2'); window.Notification = function (t, o) { window.__notes.push(t + ' | ' + ((o && o.body) || '')); }; 1`);
+  await A.js(`document.querySelector('.nav [data-tab="today"]').click()`); await sleep(200);
+  const n1 = await A.js(`window.__notes = []; document.dispatchEvent(new Event('ssync:remind-check')); const a = window.__notes.slice(); window.__notes = []; document.dispatchEvent(new Event('ssync:remind-check')); a.concat(window.__notes)`);
+  check('tasks get reminders like any deadline (at most 4 a minute, the rest a minute later)', n1.some(x => /Astronomy homework/.test(x)) && n1.filter(x => /\| Due/.test(x)).length > 4, n1);
+  const n2 = await A.js(`window.__notes = []; document.dispatchEvent(new Event('ssync:remind-check')); window.__notes`);
+  check('without repeating them', !n2.some(x => /Astronomy homework|\| Due/.test(x)), n2);
+
+  console.log('\n# Inbox: courses, restarts, Quick Add');
+  await A.js(`document.querySelector('.nav [data-tab="semester"]').click(); [...document.querySelectorAll('#coursebar [data-view]')].find(b => /HIST 101/.test(b.textContent)).click()`); await sleep(200);
+  await A.click('#removeCourse'); await A.click('#removeCourse'); await sleep(300);
+  await A.js(`document.querySelector('.nav [data-tab="inbox"]').click()`); await sleep(100);
+  rows = await inboxRows(A);
+  check('deleting a course keeps the tasks you added, back in the Inbox', rows.some(r => /Astronomy homework/.test(r) && /No course/.test(r)), rows);
+  await A.click('#toast .toast-act'); await sleep(300);
+  check('and undo puts the course and task back together', (await inboxRows(A)).some(r => /Astronomy homework/.test(r) && /HIST 101/.test(r)));
+  await A.flushed();
+  await A.reload();
+  await A.js(`document.querySelector('.nav [data-tab="inbox"]').click()`); await sleep(200);
+  rows = await inboxRows(A);
+  check('tasks are still there after restarting', ['BIO lab write-up (final)', 'Read chapter 9', 'Astronomy homework'].every(t => rows.some(r => r.includes(t))), rows);
+
+  const mac = process.platform === 'darwin', M = mac ? 'Command' : 'Control';
+  check('the Quick Add shortcut is registered at startup', globalShortcut.isRegistered(mac ? 'Command+Shift+Space' : 'Control+Shift+Space'));
+  globalShortcut.register(`${M}+Alt+K`, () => {});
+  const taken = await A.js(`window.desktop.settings.set({ quickKey: '${M}+Alt+K' })`);
+  check('a shortcut another app holds is refused with a clear message', !taken.ok && /already used/.test(taken.message), taken);
+  check('and the old shortcut keeps working', globalShortcut.isRegistered(mac ? 'Command+Shift+Space' : 'Control+Shift+Space'));
+  const reserved = await A.js(`window.desktop.settings.set({ quickKey: '${mac ? 'Command+Space' : 'Alt+F4'}' })`);
+  check('system shortcuts are refused', !reserved.ok, reserved);
+  const changed = await A.js(`window.desktop.settings.set({ quickKey: '${M}+Alt+J' })`);
+  check('a free shortcut can be chosen', changed.ok && globalShortcut.isRegistered(`${M}+Alt+J`) && !globalShortcut.isRegistered(mac ? 'Command+Shift+Space' : 'Control+Shift+Space'), changed);
+  globalShortcut.unregister(`${M}+Alt+K`);
+  await A.js(`window.desktop.settings.set({ quickKey: '${mac ? 'Command+Shift+Space' : 'Control+Shift+Space'}' })`);
+  A.win.hide();
+  app.emit('semestersync-quick-add'); await sleep(1500);
+  app.emit('semestersync-quick-add'); await sleep(500);
+  const qws = BrowserWindow.getAllWindows().filter(w => w.getTitle() === 'Quick Add');
+  check('the shortcut opens one Quick Add window, even pressed twice, with the main window hidden', qws.length === 1 && qws[0].isVisible(), qws.length);
+  const Q = device(qws[0]);
+  await Q.js(`document.getElementById('text').value = 'Psych reading for 30 minutes tomorrow'; document.getElementById('f').requestSubmit(); 1`); await sleep(300);
+  const qv = await Q.js(`({ title: document.getElementById('title').value, date: document.getElementById('date').value, hours: document.getElementById('hours').value, type: document.getElementById('type').value })`);
+  check('Quick Add proposes the details', qv.title === 'Psych reading' && qv.date === dayPlus(1) && +qv.hours === 0.5 && qv.type === 'Reading', qv);
+  await Q.js(`document.getElementById('save').click(); 1`); await sleep(1600);
+  A.win.show();
+  await A.js(`document.querySelector('.nav [data-tab="inbox"]').click()`); await sleep(300);
+  rows = await inboxRows(A);
+  check('the task lands in the Inbox, marked as new', rows.some(r => /Psych reading/.test(r) && /New from Quick Add/.test(r)), rows);
+  check('and leaves the on-disk queue once saved', JSON.parse(fs.readFileSync(path.join(TMP, 'profile', 'quick-queue.json'), 'utf8')).length === 0);
+  check('the Quick Add window hides after saving', !qws[0].isVisible());
+  // A task left in the queue (the app closed before the page took it) is picked up at the next start.
+  fs.writeFileSync(path.join(TMP, 'profile', 'quick-queue.json'), JSON.stringify([{ id: 'qtestqueued1', title: 'Queued while closed', input: 'Queued while closed', date: dayPlus(3), time: '23:59', type: 'Homework', hours: 1, notes: '', prio: 'normal', cid: null }]));
+  await A.reload(); await A.js(`document.querySelector('.nav [data-tab="inbox"]').click()`); await sleep(400);
+  check('a task waiting in the queue is added at the next start, exactly once', (await inboxRows(A)).filter(r => /Queued while closed/.test(r)).length === 1 && JSON.parse(fs.readFileSync(path.join(TMP, 'profile', 'quick-queue.json'), 'utf8')).length === 0);
+  await A.js(`document.querySelector('.nav [data-tab="semester"]').click()`);
+}
+
+async function phaseWeak(A) {
+  console.log('\n# Weak spots: what you keep getting wrong');
+  await A.js(`document.querySelector('.nav [data-tab="study"]').click()`); await sleep(200);
+  await A.js(`(() => { const s = document.getElementById('genCourse'); s.value = [...s.options].find(o => /BIO 150/.test(o.textContent)).value; s.dispatchEvent(new Event('change')); document.getElementById('genTopic').value = 'Cell biology'; document.getElementById('genEmpty').click(); })()`); await sleep(200);
+  for (const [topic, n] of [['Cellular respiration', 3], ['Mitosis', 3]]) for (let i = 1; i <= n; i++) {
+    await A.js(`(() => { document.getElementById('cardQ').value = '${topic} question ${i}'; document.getElementById('cardTopic').value = '${topic}'; document.getElementById('cardA').value = '${topic} answer ${i}'; document.getElementById('cardForm').requestSubmit(); })()`); await sleep(60);
+  }
+  await A.js(`document.querySelector('#smModes [data-mode="review"]').click()`); await sleep(100);
+  // Miss every respiration card, get every mitosis card right.
+  for (let i = 0; i < 14; i++) {
+    const q = await A.js(`(document.querySelector('#flash') || {}).innerText || ''`);
+    if (!q) break;
+    await A.js(`document.getElementById('showAns') && document.getElementById('showAns').click()`); await sleep(40);
+    await A.js(`(() => { const resp = /Cellular/.test(document.querySelector('#flash').innerText); document.querySelector('#smBody [data-q="' + (resp ? 0 : 2) + '"]').click(); })()`); await sleep(60);
+  }
+  await sleep(300);
+  let w = await A.js(`({ list: document.getElementById('weakList').innerText, summary: document.getElementById('weakSummary').innerText })`);
+  check('a topic missed again and again is flagged as weak', /Cellular respiration[\s\S]*Weak/.test(w.list), w);
+  check('a topic answered right isn’t', !/Mitosis/.test(w.list), w.list.slice(0, 300));
+  check('the missed questions are shown with their answers', /Cellular respiration question \d[\s\S]*Answer: Cellular respiration answer/.test(w.list));
+  await A.js(`document.querySelector('.nav [data-tab="inbox"]').click()`); await sleep(200);
+  let rows = await inboxRows(A);
+  check('a review session is scheduled automatically', rows.some(r => /Review: Cellular respiration/.test(r) && /Study/.test(r) && /BIO 150/.test(r) && /Practice/.test(r)), rows.filter(r => /Review/.test(r)));
+  await rowAction(A, 'Review: Cellular respiration', '[data-tdone]'); await sleep(300);
+  await A.js(`document.querySelector('.nav [data-tab="study"]').click()`); await sleep(200);
+  w = await A.js(`document.getElementById('weakList').innerText`);
+  check('finishing the review session alone doesn’t count as knowing it', /Weak/.test(w) && /marked done, but your answers don’t show it yet/.test(w), w);
+  const before = await A.js(`document.querySelectorAll('#deckList .deck')[0].innerText`);
+  await A.js(`[...document.querySelectorAll('#weakList [data-wmore]')][0].click()`); await sleep(2500);
+  const after = await A.js(`document.querySelectorAll('#deckList .deck')[0].innerText`);
+  check('Claude writes extra questions on the weak topic', /9 cards/.test(after) && /2-question quiz/.test(after), { before, after });
+  // Practice until the answers show it
+  for (let round = 0; round < 3; round++) {
+    if (round === 0) await A.js(`[...document.querySelectorAll('#weakList [data-wpractice]')][0].click()`);
+    else await A.js(`document.getElementById('practiceAgain') && document.getElementById('practiceAgain').click()`);
+    await sleep(150);
+    if (round === 0) check('practice focuses on the weak topic', /Practice: Cellular respiration/.test(await A.js(`document.getElementById('smTitle').textContent`)));
+    for (let i = 0; i < 12; i++) {
+      if (!(await A.js(`!!document.querySelector('#flash')`))) break;
+      await A.js(`document.getElementById('showAns') && document.getElementById('showAns').click()`); await sleep(30);
+      await A.js(`document.querySelector('#smBody [data-q="2"]').click()`); await sleep(40);
+    }
+  }
+  await sleep(300);
+  w = await A.js(`document.getElementById('weakList').innerText`);
+  check('right answers in practice mark it improved, with before and after', /Cellular respiration[\s\S]*Improved/.test(w) && /0% → (8|9|10)\d?%/.test(w), w);
+  check('and the toast says so', /improved on “Cellular respiration”/.test(await A.js(`document.getElementById('toast').textContent`)) || /Improved/.test(w));
+  await A.js(`document.getElementById('practiceQuiz') && document.getElementById('practiceQuiz').click()`); await sleep(200);
+  const quiz = await A.js(`({ n: document.querySelectorAll('#smBody .quiz-q').length, note: document.querySelector('#smBody .note').innerText })`);
+  check('the quiz can be narrowed to the topic', quiz.n === 2 && /Questions on Cellular respiration only/.test(quiz.note), quiz);
+  const nBefore = await A.js(`document.getElementById('weakSummary').innerText`);
+  await A.js(`(() => { const q = document.querySelector('#smBody .quiz-q'); const wrong = [...q.querySelectorAll('[data-ch]')].find(b => b.dataset.ch !== '1'); wrong.click(); })()`); await sleep(200);
+  check('quiz answers count as evidence too', (await A.js(`document.getElementById('weakSummary').innerText`)) !== nBefore);
+  w = await A.js(`document.getElementById('weakSummary').innerText`);
+  check('studying and knowing are shown apart', /h\s*studied this week/.test(w) && /questions answered/.test(w) && /Only answers count toward mastery/.test(w), w);
+  await A.flushed();
+  await A.reload();
+  await A.js(`document.querySelector('.nav [data-tab="study"]').click()`); await sleep(300);
+  w = await A.js(`document.getElementById('weakList').innerText`);
+  check('answers and results are kept after restarting', /Cellular respiration[\s\S]*Improved/.test(w), w);
+  await A.js(`document.querySelector('.nav [data-tab="insights"]').click(); document.getElementById('repNext').click()`); await sleep(200);
+  check('the weekly report shows what you showed you know', /What you showed you know[\s\S]*questions answered[\s\S]*Improved[\s\S]*Cellular respiration/.test(await A.js(`document.getElementById('repBody').innerText`)));
+  await A.js(`document.querySelector('.nav [data-tab="semester"]').click()`);
+}
+
 async function phaseSync(A) {
   console.log('\n# Signing in moves this computer’s courses into the account');
   const mine = await A.js(`[...document.querySelectorAll('#coursebar [data-view]')].slice(1).map(b => b.textContent.replace(/\\d+$/, ''))`);
   await A.click('#accountBtn'); await sleep(200);
   await A.js(`(() => { document.getElementById('authEmail').value = 'student@example.com'; document.getElementById('authPass').value = 'correct horse'; document.getElementById('authForm').requestSubmit(); })()`);
   await A.loaded(); await A.until(`!!document.querySelector('#coursebar [data-view]')`); await sleep(1500);
-  const courseDocs = () => [...cloud.keys()].filter(k => k.startsWith('course-'));
+  const courseDocs = () => [...cloud.keys()].filter(k => k.startsWith('course-') && k !== 'course-inbox');
   check('the account gets every course', courseDocs().length === mine.length, { cloud: [...cloud.keys()], mine });
   check('the page now saves to the account', /account/.test(await A.saveStatus()), await A.saveStatus());
 
@@ -385,6 +593,11 @@ async function phaseSync(A) {
   await setTitle(A, 0, 'Edited on A'); await A.flushed();
   B.win.focus(); await B.js(`document.dispatchEvent(new Event('visibilitychange'))`); await sleep(800);
   check('an edit on A shows up on B', (await titleOf(B, 0)) === 'Edited on A', await titleOf(B, 0));
+  await addTask(A, 'Group meeting prep in 4 days'); await A.click('#qaReview [data-tsave]'); await A.flushed();
+  B.win.focus(); await B.js(`document.dispatchEvent(new Event('visibilitychange'))`); await sleep(800);
+  await B.js(`document.querySelector('.nav [data-tab="inbox"]').click()`); await sleep(200);
+  check('a task added on A shows up in B’s Inbox', (await inboxRows(B)).some(r => /Group meeting prep/.test(r)));
+  await B.js(`document.querySelector('.nav [data-tab="semester"]').click()`);
   check('just opening the account never counts as an edit', ![...cloud.values()].some(b => b.json && b.json.includes('"title":"Lab Report 2"')) && !(await B.js(`(localStorage.getItem('ssync-snapshots-v1') || '').includes('two devices')`)));
 
   console.log('\n# The same course edited on both');
@@ -396,19 +609,22 @@ async function phaseSync(A) {
   await B.js(`document.dispatchEvent(new CustomEvent('ssync:data', { detail: 'data' }))`); await sleep(300);
   const bs = await B.js(`[...document.querySelectorAll('#snapList b')].map(b => b.textContent)`);
   check('the other version is kept as a safety copy', bs.some(s => /edited on two devices/.test(s)), bs);
-  await B.js(`(() => { const b = [...document.querySelectorAll('#snapList li')].find(l => /two devices/.test(l.innerText)).querySelector('[data-restore]'); b.click(); })()`); await sleep(400);
+  await B.js(`(() => { const b = [...document.querySelectorAll('#snapList li')].find(l => /Other copy of BIO 150.*two devices/.test(l.innerText)).querySelector('[data-restore]'); b.click(); })()`); await sleep(400);
   check('and restoring it brings back A’s edit', (await titleOf(B, 1)) === 'Second edit on A', await titleOf(B, 1));
   await B.flushed();
 
   console.log('\n# Offline');
   cloudDown = true;
-  await setTitle(A, 2, 'Typed while offline'); await sleep(1500);
+  await setTitle(A, 2, 'Typed while offline');
+  await addTask(A, 'Offline task tomorrow'); await A.click('#qaReview [data-tsave]'); await sleep(1500);
+  await A.js(`document.querySelector('.nav [data-tab="semester"]').click()`);
   check('an offline save says so and keeps the change', /Offline/.test(await A.saveStatus()), await A.saveStatus());
   await A.reload();
   await A.js(`document.querySelectorAll('#coursebar [data-view]')[1].click()`);
   check('reopening offline loads this computer’s copy', (await titleOf(A, 2)) === 'Typed while offline', await titleOf(A, 2));
   cloudDown = false;
   await A.until(`/Synced/.test(document.getElementById('saveStatus').textContent)`, 20000);
+  check('a task created offline reaches the account too', [...cloud.values()].some(b => b.json && b.json.includes('Offline task')));
   check('it syncs by itself when the account is back', JSON.parse(cloud.get('course-' + cid).json).items.some(i => i.title === 'Typed while offline'), await A.saveStatus());
 
   console.log('\n# Deleting on one device');

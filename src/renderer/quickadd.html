@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Quick Add</title>
+<style>
+:root { color-scheme: light dark; --bg: #f6f7fa; --surface: #ffffff; --surface-2: #eef1f5; --ink: #111a26; --muted: #586577; --line: #d9dee6; --accent: #3d5bd9; --accent-ink: #ffffff; --accent-soft: #e2e8fd; --warn: #a45f00; --good: #187a52; --crit: #c23b30; }
+@media (prefers-color-scheme: dark) { :root { --bg: #0b1017; --surface: #121924; --surface-2: #1a2330; --ink: #e8edf4; --muted: #94a1b2; --line: #273141; --accent: #8fa6ff; --accent-ink: #0b1017; --accent-soft: #1d2a4d; --warn: #e6a640; --good: #46c495; --crit: #f07a70; } }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 -apple-system, "Segoe UI", system-ui, sans-serif; }
+[hidden] { display: none !important; }
+main { padding: 14px; display: grid; gap: 10px; }
+.in { width: 100%; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 10px; padding: 12px 14px; font: 17px inherit; font-family: inherit; }
+.in:focus, input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.hint { color: var(--muted); font-size: 12px; margin: 0; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; }
+.grid .wide { grid-column: 1 / -1; }
+label { display: grid; gap: 3px; font-size: 11.5px; font-weight: 600; color: var(--muted); }
+input, select { width: 100%; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 8px; padding: 7px 9px; font: 13px inherit; font-family: inherit; }
+.choices { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12.5px; }
+.choices span { color: var(--warn); font-weight: 600; }
+.chip, .seg button { border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 999px; padding: 5px 10px; font: 600 12px inherit; font-family: inherit; cursor: pointer; }
+.chip[aria-pressed="true"], .seg button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.seg { display: flex; gap: 4px; }
+.warn { color: var(--warn); font-size: 12.5px; margin: 0; }
+.bar { display: flex; gap: 8px; align-items: center; }
+.btn { border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 9px; padding: 8px 14px; font: 600 13px inherit; font-family: inherit; cursor: pointer; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.ok { color: var(--good); font-weight: 600; text-align: center; padding: 6px 0; }
+.err { color: var(--crit); font-size: 12.5px; margin: 0; }
+.kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
+</style>
+</head>
+<body>
+<main>
+  <form id="f" autocomplete="off">
+    <input class="in" id="text" maxlength="300" placeholder="Add a task, e.g. “History reading, next Tuesday”" aria-label="New task" autofocus>
+  </form>
+  <p class="hint" id="hint"><span class="kbd">Enter</span> to review · <span class="kbd">Esc</span> to close</p>
+  <section id="review" hidden>
+    <div class="grid">
+      <label class="wide">Title<input id="title" maxlength="120"></label>
+      <label>Course<select id="course"></select></label>
+      <label>Type<select id="type"></select></label>
+      <label>Due date<input id="date" type="date"></label>
+      <label>Time<input id="time" type="time"></label>
+      <label>Estimated time (hours)<input id="hours" type="number" min="0" max="200" step="0.25"></label>
+      <label>Priority<div class="seg" id="prio" role="group" aria-label="Priority"><button type="button" data-p="low">Low</button><button type="button" data-p="normal">Normal</button><button type="button" data-p="high">High</button></div></label>
+      <label class="wide">Notes<input id="notes" maxlength="300" placeholder="Optional"></label>
+    </div>
+    <div class="choices" id="choices" hidden></div>
+    <p class="warn" id="warn" hidden></p>
+    <div class="bar"><button type="button" class="btn primary" id="save">Save task</button><button type="button" class="btn" id="back">Back</button><span class="hint" id="saveHint"></span></div>
+  </section>
+  <p class="ok" id="done" hidden></p>
+  <p class="err" id="err" hidden></p>
+</main>
+<script src="taskparse.js"></script>
+<script src="quickadd.js"></script>
+</body>
+</html>

@@ -2,7 +2,7 @@
 // first. That broke flashcard review once; this check stops it happening again. Run: node test/static.test.js
 const fs = require('node:fs'), path = require('node:path');
 let failed = 0;
-for (const f of ['app.js', 'desktop.js', 'bridge.js']) {
+for (const f of ['app.js', 'desktop.js', 'bridge.js', 'quickadd.js', 'taskparse.js']) {
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', f), 'utf8');
   const names = [...src.matchAll(/^\s{0,2}(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*\(/gm)].map(m => m[1]);
   const dup = names.filter((n, i) => names.indexOf(n) !== i);

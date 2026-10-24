@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, dialog, Menu, Tray, nativeImage, safeStorage, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Menu, Tray, nativeImage, safeStorage, nativeTheme, globalShortcut, screen } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const Anthropic = require('@anthropic-ai/sdk');
@@ -200,7 +200,7 @@ cloud.register(ipcMain);
 /* ---------- Settings IPC ---------- */
 ipcMain.handle('settings:get', async () => {
   const s = await readSettings();
-  return { hasKey: !!(await getApiKey()), keyFromEnv: !s.apiKey && !!process.env.ANTHROPIC_API_KEY, reminders: s.reminders !== false, keepInTray: s.keepInTray !== false, canEncrypt: safeStorage.isEncryptionAvailable() };
+  return { hasKey: !!(await getApiKey()), keyFromEnv: !s.apiKey && !!process.env.ANTHROPIC_API_KEY, reminders: s.reminders !== false, keepInTray: s.keepInTray !== false, quickKey: s.quickKey === undefined ? DEFAULT_QUICK_KEY : s.quickKey, quickDefault: DEFAULT_QUICK_KEY, quickStatus: quickState, canEncrypt: safeStorage.isEncryptionAvailable() };
 });
 ipcMain.handle('settings:set', async (_e, patch) => {
   const s = await readSettings();
@@ -212,6 +212,11 @@ ipcMain.handle('settings:set', async (_e, patch) => {
   }
   if (typeof patch.reminders === 'boolean') s.reminders = patch.reminders;
   if (typeof patch.keepInTray === 'boolean') { s.keepInTray = patch.keepInTray; keepInTray = patch.keepInTray; }
+  if (typeof patch.quickKey === 'string') {
+    const res = registerQuick(patch.quickKey);
+    if (!res.ok) return { ok: false, message: res.message }; // keep the old setting
+    s.quickKey = patch.quickKey;
+  }
   await writeSettings(s);
   return { ok: true };
 });
@@ -325,9 +330,10 @@ function buildTrayMenu() {
     items.push({ type: 'separator' }, head(s.top.length ? 'Top priorities' : 'Nothing pressing'));
     s.top.forEach((t, i) => items.push({ label: `   ${i + 1}. ${clip(t.label, 60)}`, click: () => showWindow({ channel: 'menu:open-item', arg: t.iid }) }));
     if (s.due.length) { items.push({ type: 'separator' }, head('Due next')); for (const d of s.due) items.push({ label: '   ' + clip(d.label, 64), click: () => showWindow({ channel: 'menu:open-item', arg: d.iid }) }); }
-    if (s.overdue) items.push({ type: 'separator' }, { label: `⚠ ${s.overdue} overdue: open the plan`, click: () => showWindow({ channel: 'menu:tab-2' }) });
+    if (s.overdue) items.push({ type: 'separator' }, { label: `⚠ ${s.overdue} overdue: open the plan`, click: () => showWindow({ channel: 'menu:tab-3' }) });
     items.push({ type: 'separator' });
   }
+  items.push({ label: `Quick Add…${quickState.ok && quickState.label ? `   ${quickState.label}` : ''}`, click: () => showQuickAdd() });
   items.push({ label: 'Open Today', click: () => showWindow({ channel: 'menu:open-today' }) });
   if (s && s.paused) items.push({ label: 'Resume reminders', click: () => showWindow({ channel: 'menu:snooze-all', arg: '0' }) });
   else items.push({ label: 'Pause reminders', submenu: [
@@ -357,8 +363,106 @@ ipcMain.on('tray:update', (_e, s) => {
 });
 ipcMain.on('app:show', () => showWindow());
 
+/* ---------- Quick Add: a global shortcut and a small window ---------- */
+// One Quick Add window, created on first use and hidden (not closed) afterwards, so pressing the
+// shortcut again never opens a second one. Tasks go to a queue file first and leave it only when the
+// main page says it has saved them, so a task is never lost if the app closes or the page isn't ready.
+const DEFAULT_QUICK_KEY = isMac ? 'Command+Shift+Space' : 'Control+Shift+Space';
+const MODS = ['Command', 'Cmd', 'Control', 'Ctrl', 'CommandOrControl', 'CmdOrCtrl', 'Alt', 'Option', 'AltGr', 'Shift', 'Super', 'Meta'];
+// Shortcuts the system or almost every app relies on.
+const RESERVED = new Set(['Command+Space', 'Control+Space', 'Command+Tab', 'Alt+Tab', 'Command+Q', 'Command+W', 'Command+H', 'Command+M', 'Command+C', 'Command+V', 'Command+X', 'Command+Z', 'Command+A',
+  'Control+C', 'Control+V', 'Control+X', 'Control+Z', 'Control+A', 'Control+Alt+Delete', 'Alt+F4', 'Command+Alt+Escape', 'Command+Shift+3', 'Command+Shift+4', 'Command+Shift+5', 'Control+Escape', 'Control+Shift+Escape', 'Super+L', 'Super+D', 'Super+Tab']);
+let quickWin = null, quickKey = null, quickState = { ok: false, label: '', message: 'Not set up yet' }, quickCtx = { courses: [] };
+const quickQueueFile = () => path.join(app.getPath('userData'), 'quick-queue.json');
+const keyLabel = a => isMac ? a.replace(/CommandOrControl|CmdOrCtrl|Command|Cmd/g, '⌘').replace(/Control|Ctrl/g, '⌃').replace(/Alt|Option/g, '⌥').replace(/Shift/g, '⇧').replace(/\+/g, '') : a.replace(/CommandOrControl|CmdOrCtrl|Control/g, 'Ctrl').replace(/Super/g, 'Win');
+function checkAccel(a) {
+  const parts = String(a || '').split('+').map(p => p.trim()).filter(Boolean);
+  const mods = parts.filter(p => MODS.includes(p)), keys = parts.filter(p => !MODS.includes(p));
+  if (keys.length !== 1 || !/^([A-Z0-9]|F([1-9]|1[0-9]|2[0-4])|Space|Enter|Tab|Up|Down|Left|Right|Home|End|PageUp|PageDown|Insert|Delete|Backspace|Plus|[-=\[\];',./`\\])$/.test(keys[0])) return 'Use one key plus modifiers, like ⌘⇧Space or Ctrl+Shift+Space.';
+  if (!mods.some(m => m !== 'Shift')) return 'Include Command, Control or Option/Alt, so typing never triggers it by accident.';
+  const norm = parts.map(p => ({ Cmd: 'Command', Ctrl: 'Control', Option: 'Alt', CmdOrCtrl: isMac ? 'Command' : 'Control', CommandOrControl: isMac ? 'Command' : 'Control' }[p] || p)).join('+');
+  if (RESERVED.has(norm)) return 'Your computer or most apps already use that one. Pick another.';
+  return '';
+}
+// Registers the shortcut, or reports why it couldn't. '' turns it off.
+function registerQuick(accel) {
+  if (accel) { const bad = checkAccel(accel); if (bad) return { ok: false, message: bad }; }
+  const prev = quickKey;
+  if (prev) { try { globalShortcut.unregister(prev); } catch (_) {} quickKey = null; }
+  if (!accel) { quickState = { ok: true, off: true, label: '', message: 'Turned off' }; sendQuickStatus(); return { ok: true }; }
+  let ok = false;
+  try { ok = globalShortcut.register(accel, () => app.emit('semestersync-quick-add')); } catch (_) { ok = false; }
+  if (ok) { quickKey = accel; quickState = { ok: true, accel, label: keyLabel(accel), message: '' }; sendQuickStatus(); return { ok: true }; }
+  // Couldn't take it (another app has it): put the old one back.
+  if (prev) { try { if (globalShortcut.register(prev, () => app.emit('semestersync-quick-add'))) { quickKey = prev; quickState = { ok: true, accel: prev, label: keyLabel(prev), message: '' }; } } catch (_) {} }
+  else quickState = { ok: false, label: '', message: `${keyLabel(accel)} is already used by another app. Choose a different shortcut in Settings, or use File → Quick Add.` };
+  sendQuickStatus();
+  return { ok: false, message: `${keyLabel(accel)} is already used by another app. Pick a different one.` };
+}
+function sendQuickStatus() { if (win && !win.isDestroyed()) win.webContents.send('menu:quick-status', quickState); }
+async function readQueue() { try { const v = JSON.parse(await fs.readFile(quickQueueFile(), 'utf8')); return Array.isArray(v) ? v : []; } catch { return []; } }
+let queueP = Promise.resolve();
+const withQueue = fn => (queueP = queueP.then(async () => { const q = await readQueue(); const out = await fn(q); await fs.mkdir(path.dirname(quickQueueFile()), { recursive: true }); await fs.writeFile(quickQueueFile() + '.tmp', JSON.stringify(q)); await fs.rename(quickQueueFile() + '.tmp', quickQueueFile()); return out; }));
+function cleanQuickTask(t) {
+  if (!t || typeof t !== 'object' || typeof t.id !== 'string' || !/^[\w.-]{1,60}$/.test(t.id)) return null;
+  const str = (v, n) => String(v ?? '').replace(/[\u0000-\u001f]/g, ' ').slice(0, n);
+  return { id: t.id, input: str(t.input, 300), title: str(t.title, 120), cid: t.cid ? str(t.cid, 40) : null, type: str(t.type, 12), date: /^\d{4}-\d{2}-\d{2}$/.test(t.date || '') ? t.date : null,
+    time: /^\d{2}:\d{2}$/.test(t.time || '') ? t.time : '23:59', hours: isFinite(+t.hours) && t.hours !== null ? Math.max(0, Math.min(200, +t.hours)) : null, notes: str(t.notes, 300), prio: ['low', 'high'].includes(t.prio) ? t.prio : 'normal', at: Date.now() };
+}
+function placeQuickWin() {
+  const d = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+  const [w] = quickWin.getSize();
+  quickWin.setPosition(Math.round(d.x + (d.width - w) / 2), Math.round(d.y + d.height * 0.18));
+}
+function showQuickAdd() {
+  if (!quickWin || quickWin.isDestroyed()) {
+    quickWin = new BrowserWindow({
+      width: 560, height: 120, show: false, resizable: false, minimizable: false, maximizable: false, fullscreenable: false, alwaysOnTop: true, skipTaskbar: true,
+      title: 'Quick Add', backgroundColor: nativeTheme.shouldUseDarkColors ? '#0b1017' : '#f6f7fa',
+      webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    quickWin.setMenuBarVisibility(false);
+    quickWin.loadFile(path.join(__dirname, 'renderer', 'quickadd.html'));
+    quickWin.on('close', e => { if (!quitting) { e.preventDefault(); quickWin.hide(); } });
+    quickWin.on('blur', () => { if (quickWin && !quickWin.isDestroyed() && !quickWin.webContents.isDevToolsOpened()) quickWin.hide(); }); // what was typed stays for next time
+    quickWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    quickWin.webContents.on('will-navigate', e => e.preventDefault());
+    quickWin.once('ready-to-show', () => { placeQuickWin(); quickWin.show(); quickWin.focus(); });
+    return;
+  }
+  placeQuickWin();
+  quickWin.show(); quickWin.focus();
+  quickWin.webContents.send('quick:shown');
+}
+app.on('semestersync-quick-add', showQuickAdd);
+ipcMain.handle('quick:context', () => quickCtx);
+ipcMain.on('quick:set-context', (_e, c) => {
+  if (!c || !Array.isArray(c.courses)) return;
+  quickCtx = { courses: c.courses.slice(0, 12).map(x => ({ id: String(x.id || '').slice(0, 40), code: String(x.code || '').slice(0, 18), title: String(x.title || '').slice(0, 80) })) };
+});
+ipcMain.handle('quick:submit', async (_e, t) => {
+  const task = cleanQuickTask(t);
+  if (!task || !task.title) return { ok: false, message: 'Add a title first.' };
+  try { await withQueue(q => { if (!q.some(x => x.id === task.id)) q.push(task); }); }
+  catch (_) { return { ok: false, message: 'Couldn’t save the task to disk. It’s still here; try again.' }; }
+  if (!win || win.isDestroyed()) createWindow(true); // the page picks the task up from the queue when it loads
+  else win.webContents.send('menu:quick-task', task);
+  return { ok: true };
+});
+ipcMain.handle('quick:drain', () => readQueue());
+ipcMain.on('quick:ack', (_e, id) => { withQueue(q => { const n = q.findIndex(x => x.id === id); if (n >= 0) q.splice(n, 1); }).catch(() => {}); });
+ipcMain.handle('quick:status', () => quickState);
+ipcMain.on('quick:hide', () => {
+  if (!quickWin || quickWin.isDestroyed()) return;
+  quickWin.hide();
+  // Hand focus back to the app the student was in, unless SemesterSync's own window is open.
+  if (isMac && !(win && !win.isDestroyed() && win.isVisible())) app.hide();
+});
+ipcMain.on('quick:resize', (_e, h) => { if (quickWin && !quickWin.isDestroyed()) quickWin.setContentSize(560, Math.max(90, Math.min(640, Math.round(+h || 120)))); });
+app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch (_) {} });
+
 /* ---------- Window ---------- */
-function createWindow() {
+function createWindow(hidden) {
   win = new BrowserWindow({
     width: 1320,
     height: 900,
@@ -375,7 +479,7 @@ function createWindow() {
       spellcheck: true,
     },
   });
-  win.once('ready-to-show', () => { if (!process.argv.includes('--hidden')) win.show(); });
+  win.once('ready-to-show', () => { if (!hidden && !process.argv.includes('--hidden')) win.show(); });
   win.on('close', e => {
     if (quitting || !tray || !keepInTray) return;
     e.preventDefault(); win.hide(); // keeps reminders running; the tray or Dock brings it back
@@ -430,6 +534,7 @@ function buildMenu() {
     {
       label: 'File',
       submenu: [
+        { label: 'Quick Add Task…', click: () => showQuickAdd() },
         { label: 'New Course', accelerator: 'CmdOrCtrl+N', click: () => send('menu:new-course') },
         { label: 'Open Syllabus File…', accelerator: 'CmdOrCtrl+O', click: () => send('menu:open-file') },
         { label: 'Export Calendar File…', accelerator: 'CmdOrCtrl+E', click: () => send('menu:export-ics') },
@@ -450,7 +555,7 @@ function buildMenu() {
     {
       label: 'View',
       submenu: [
-        ...['Today', 'Semester', 'Plan', 'Grades', 'Study', 'Coach', 'Rooms', 'Insights'].map((label, i) => ({ label, accelerator: `CmdOrCtrl+${i + 1}`, click: () => send('menu:tab-' + i) })),
+        ...['Today', 'Inbox', 'Semester', 'Plan', 'Grades', 'Study', 'Coach', 'Rooms', 'Insights'].map((label, i) => ({ label, accelerator: `CmdOrCtrl+${i + 1}`, click: () => send('menu:tab-' + i) })),
         { label: 'Search…', accelerator: 'CmdOrCtrl+K', click: () => send('menu:search') },
         { type: 'separator' },
         { label: 'Toggle Light/Dark', accelerator: 'CmdOrCtrl+Shift+L', click: () => send('menu:theme') },
@@ -484,7 +589,10 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     if (process.platform === 'win32') app.setAppUserModelId('com.syllabussync.desktop'); // needed for Windows notifications
     buildMenu();
-    readSettings().then(s => { keepInTray = s.keepInTray !== false; });
+    readSettings().then(s => {
+      keepInTray = s.keepInTray !== false;
+      if (!process.env.SEMESTERSYNC_SMOKE) registerQuick(s.quickKey === undefined ? DEFAULT_QUICK_KEY : s.quickKey);
+    });
     createWindow();
     createTray();
     app.on('activate', () => showWindow());

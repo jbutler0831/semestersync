@@ -31,6 +31,15 @@
         <label class="switch"><input type="checkbox" id="trayToggle" aria-label="Keep running when the window is closed"><span></span></label>
       </div>
       <p class="hint">Reminders, the morning summary and quiet hours are on the <button type="button" class="linkish" id="remindLink">Today</button> tab.</p>
+      <section class="field">
+        <label for="quickKeyIn">Quick Add shortcut</label>
+        <div class="row" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <input type="text" id="quickKeyIn" readonly class="key-in" placeholder="Click, then press keys" aria-describedby="quickKeyHint" style="flex:1;min-width:160px">
+          <button type="button" class="btn sm" id="quickKeyDefault">Default</button>
+          <button type="button" class="btn sm ghost" id="quickKeyOff">Turn off</button>
+        </div>
+        <p class="hint" id="quickKeyHint">Opens a small window to add a task from anywhere on your computer.</p>
+      </section>
       <div class="actions">
         <button type="button" class="btn ghost danger" id="removeKey">Remove key</button>
         <span style="flex:1"></span>
@@ -47,6 +56,8 @@
     $('apiKey').placeholder = settings.hasKey ? (settings.keyFromEnv ? 'Using ANTHROPIC_API_KEY from your environment' : 'Saved. Paste a new key to replace it') : 'sk-ant-…';
     $('removeKey').hidden = !settings.hasKey || settings.keyFromEnv;
     $('trayToggle').checked = settings.keepInTray !== false;
+    quickKey = settings.quickKey || '';
+    paintQuickKey(settings.quickStatus);
     $('keyMsg').hidden = true;
     dlg.showModal();
     $('apiKey').focus();
@@ -58,6 +69,11 @@
     e.preventDefault();
     const key = $('apiKey').value.trim();
     const keepInTray = $('trayToggle').checked;
+    if (quickKey !== (settings.quickKey || '')) {
+      const r = await d.settings.set({ quickKey });
+      if (!r.ok) { const h = $('quickKeyHint'); h.textContent = r.message; h.style.color = 'var(--crit)'; $('quickKeyIn').focus(); return; }
+      settings.quickKey = quickKey;
+    }
     if (key) {
       $('saveSettings').disabled = true; keyMsg('Checking key…');
       const test = await d.settings.testKey(key);
@@ -74,6 +90,30 @@
     toast('Settings saved');
   });
   gear.onclick = openSettings;
+  // Records a shortcut from the keys pressed: modifiers plus one key, in Electron's accelerator format.
+  let quickKey = '';
+  const isMacOS = d.platform === 'darwin';
+  const label = a => !a ? '' : isMacOS ? a.replace(/Command/g, '⌘').replace(/Control/g, '⌃').replace(/Alt/g, '⌥').replace(/Shift/g, '⇧').replace(/\+/g, '') : a.replace(/Control/g, 'Ctrl').replace(/Super/g, 'Win');
+  function paintQuickKey(status) {
+    $('quickKeyIn').value = quickKey ? label(quickKey) : 'Off';
+    const h = $('quickKeyHint');
+    if (status && !status.ok && status.message && quickKey === settings.quickKey) { h.textContent = status.message; h.style.color = 'var(--crit)'; }
+    else { h.textContent = quickKey ? 'Opens a small window to add a task from anywhere on your computer.' : 'Off. You can still use File → Quick Add Task, or the Inbox tab.'; h.style.color = ''; }
+  }
+  $('quickKeyIn').addEventListener('keydown', e => {
+    if (e.key === 'Tab') return;
+    e.preventDefault();
+    if (e.key === 'Escape' || e.key === 'Backspace') { paintQuickKey(); return; }
+    const mods = [e.metaKey && 'Command', e.ctrlKey && 'Control', e.altKey && 'Alt', e.shiftKey && 'Shift'].filter(Boolean);
+    const code = e.code;
+    const key = /^Key[A-Z]$/.test(code) ? code.slice(3) : /^Digit\d$/.test(code) ? code.slice(5) : code === 'Space' ? 'Space' : /^F\d{1,2}$/.test(code) ? code : null;
+    if (!key) { $('quickKeyIn').value = mods.map(m => label(m)).join(isMacOS ? '' : '+') + (isMacOS ? '' : '+') + '…'; return; }
+    if (!mods.some(m => m !== 'Shift')) { $('quickKeyHint').textContent = 'Include Command, Control or Option/Alt.'; $('quickKeyHint').style.color = 'var(--crit)'; return; }
+    quickKey = [...mods, key].join('+');
+    paintQuickKey();
+  });
+  $('quickKeyDefault').onclick = () => { quickKey = settings.quickDefault; paintQuickKey(); };
+  $('quickKeyOff').onclick = () => { quickKey = ''; paintQuickKey(); };
   $('remindLink').onclick = () => { dlg.close(); const b = document.querySelector('.nav [data-tab="today"]'); if (b) b.click(); const p = $('remindPanel'); if (p) p.scrollIntoView({ block: 'start' }); };
 
   /* ---------- Claude availability hint ---------- */

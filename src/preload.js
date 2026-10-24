@@ -70,4 +70,15 @@ contextBridge.exposeInMainWorld('desktop', {
   onMenu: (name, fn) => ipcRenderer.on('menu:' + name, (_e, arg) => fn(arg)),
   tray: { update: summary => ipcRenderer.send('tray:update', summary) },
   app: { show: () => ipcRenderer.send('app:show') },
+  quick: {
+    submit: task => ipcRenderer.invoke('quick:submit', task),
+    getContext: () => ipcRenderer.invoke('quick:context'),
+    context: c => ipcRenderer.send('quick:set-context', c),
+    drain: () => ipcRenderer.invoke('quick:drain'),
+    ack: id => ipcRenderer.send('quick:ack', id),
+    status: () => ipcRenderer.invoke('quick:status'),
+    hide: () => ipcRenderer.send('quick:hide'),
+    resize: h => ipcRenderer.send('quick:resize', h),
+    onShown: fn => ipcRenderer.on('quick:shown', () => fn()),
+  },
 });
