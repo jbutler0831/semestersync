@@ -22,6 +22,7 @@ Updating keeps your courses, settings and sign-in.
 | Tab | What's in it |
 |---|---|
 | **Today** | A **focus timer** (15, 25, 50 or 90 minutes, with breaks) for any deliverable or general study; finished time is logged automatically and the countdown stays in the top bar on every tab. Plus a compact view of the day: classes (read from each syllabus's meeting times, editable under **Class times**, skipping holidays and breaks), your top 3 priorities with why, what's due next with a countdown, today's study plan, and overdue or at-risk warnings. |
+| **Inbox** | Capture tasks that aren't in a syllabus (homework announced in class, readings, projects, study goals) by typing them in plain English: “Biology paper due Friday, 5 pages”. SemesterSync proposes the title, course, due date and time, type, estimated time, notes and priority, and you check them before saving. Ambiguous dates (“next Tuesday” said on a Monday, “next week”) are offered as choices, never guessed; unknown courses are never invented. Filters for everything, tasks that need attention (no date, no course, new from Quick Add, possible duplicate) and tasks with no course, plus search, editing, completing, deleting with undo, **Move to course** and **Plan today**. |
 | **Semester** | Add syllabi as PDFs, text or photos (**Scan photo** reads a printed page with Claude). After each parse, **What we found** lists everything to check before you rely on it: low-confidence items, ambiguous dates like 3/4, a missing year, weights that don't add to 100%, missing items. Fix them in place or jump to the line in the syllabus. The original file is kept with the course. Then every deliverable (searchable and filterable), grading breakdown, workload heatmap and calendar export. |
 | **Plan** | Smart deadlines (overdue, today, this week) ranked by priority, with done checkboxes and time logging. An adaptive study planner books work into the hours you have each day and re-plans whenever you finish something, log time or miss a day. Deadlines that won't fit are flagged as at risk, with how many hours short you are. Days with two or more big deadlines are called out, planned work you didn't log yesterday is named and moved forward, you can lock a session to its day, and every priority explains itself (tap **High** to see why). |
 | **Grades** | Grade predictor: enter scores and see your current grade, projected final and what you need on the rest for each letter. **Final-exam targets:** the score you need on the final for every letter grade, plus a slider for "if I get X on the final". **Weighted grade calculator:** your average in each grading category (filled in from your scores, or typed in), with your own categories for any course. **GPA:** semester and cumulative GPA, what-if grades, a goal GPA, and a likely semester GPA with a best and worst case. |
@@ -29,6 +30,8 @@ Updating keeps your courses, settings and sign-in.
 | **Coach** | Chat with Claude about your semester. It sees your courses, deadlines, grades and plan, and nothing else. |
 | **Rooms** | Study rooms: join with a code, see who's there, what they're working on and their focus timers, and chat. Finished focus sessions count as logged time. |
 | **Insights** | A **weekly progress report** (hours studied vs. the hours you set aside, by course; deadlines done, late and missed; new scores and how projected grades moved; flashcards reviewed; and next week's deadlines), which you can save as a file or talk through with the coach. **Study history**: every focus session and logged hour, a 14-day chart, weekly totals and your streak, with mistakes easy to delete. Also deadlines done, hours logged, projected GPA, grades and remaining work by course, planned hours vs. available hours for 8 weeks, and a **stress test** that shows what breaks if you lose days or study less. |
+
+**Quick Add** (desktop): press **⌘⇧Space** on a Mac or **Ctrl+Shift+Space** on Windows from any app to open a small Quick Add window, type a task, check it and save. It works while SemesterSync is hidden in the menu bar or tray. Change or turn off the shortcut in **Settings**; shortcuts the system uses, and ones another app already holds, are refused with an explanation. **File → Quick Add Task** and the menu-bar/tray menu open the same window.
 
 **Reminders** (Today tab): desktop notifications before each deadline at the times you pick (1 week, 3 days, 1 day, 6 hours, 2 hours, 1 hour), a morning summary of your day, a daily nudge about overdue work, warnings when something high priority is due within two days, quiet hours (nothing arrives; what's still ahead comes after), a daily **study nudge** if you haven't started today's planned work, the **weekly report** on the day and time you pick, a notification when a focus session ends, **muting** a course, and snooze for one deliverable or pause everything for an hour or until tomorrow. Settings follow your account to every computer; what was already sent is tracked per computer so nothing repeats.
 
@@ -55,7 +58,7 @@ Set `SEMESTERSYNC_DATA_DIR=/some/folder` to run on a separate profile without to
 npm test
 ```
 
-Runs the real app on a throwaway profile with a fake Claude API and a fake account server (94 checks, about 2 minutes). Nothing touches your data, your Claude key or Supabase. It covers first launch, the Today view and reminders (intervals, morning summary, overdue and high-priority warnings, quiet hours, pausing, no repeats, the tray summary), syllabus review, calendar export, backup and restore, damaged data, the planner, search and shortcuts, and sync between two computers: changes flowing both ways, the same course edited on both, working offline, deleting, signing out, and signing into an account that already has courses. The GitHub workflow runs it on macOS and Windows for every push and before any release.
+Runs the real app on a throwaway profile with a fake Claude API and a fake account server (23 parser checks, then 137 app checks, about 3 minutes). Nothing touches your data, your Claude key or Supabase. It covers first launch, the Today view and reminders (intervals, morning summary, overdue and high-priority warnings, quiet hours, pausing, no repeats, the tray summary), syllabus review, calendar export, backup and restore, damaged data, the planner, search and shortcuts, and sync between two computers: changes flowing both ways, the same course edited on both, working offline, deleting, signing out, and signing into an account that already has courses. The GitHub workflow runs it on macOS and Windows for every push and before any release.
 
 ## Backups and safety
 
@@ -121,8 +124,8 @@ How it works:
 ## Build installers
 
 ```bash
-npm run dist:mac   # dist/SemesterSync-1.3.0-universal.dmg (Intel + Apple silicon)
-npm run dist:win   # dist/SemesterSync-Setup-1.3.0.exe (x64 + arm64)
+npm run dist:mac   # dist/SemesterSync-1.4.0-universal.dmg (Intel + Apple silicon)
+npm run dist:win   # dist/SemesterSync-Setup-1.4.0.exe (x64 + arm64)
 scripts/verify-installer.sh   # installs/mounts the build, starts it on a throwaway profile, checks signing
 ```
 
@@ -153,7 +156,10 @@ After adding them, set the repository variable `REQUIRE_SIGNED` to `1` so a rele
 | `src/renderer/bridge.js` | Connects the UI's Claude calls to the main process |
 | `src/renderer/desktop.js` | Settings and account dialogs, menu shortcuts |
 | `src/assets/` | Menu-bar and tray icons |
-| `test/e2e.js`, `test/fake-claude.js` | The regression tests (`npm test`) |
+| `src/renderer/taskparse.js` | Reads a task typed in plain English (runs on the device; no API) |
+| `src/renderer/quickadd.html`, `quickadd.js` | The Quick Add window |
+| `test/taskparse.test.js` | Parser unit tests (`npm run test:parse`) |
+| `test/e2e.js`, `test/fake-claude.js` | The regression tests (`npm test` runs both) |
 | `scripts/verify-installer.sh` | Checks a built installer installs and starts |
 | `build/icon.png` | App icon (electron-builder converts it to .icns and .ico) |
 
@@ -164,13 +170,21 @@ After adding them, set the repository variable `REQUIRE_SIGNED` to `1` so a rele
 | New course | ⌘N | Ctrl+N |
 | Open syllabus file | ⌘O | Ctrl+O |
 | Export to calendar app | ⌘E | Ctrl+E |
+| Quick Add from any app | ⌘⇧Space (change in Settings) | Ctrl+Shift+Space |
+| Add a task in the Inbox | N | N |
 | Search everything | ⌘K or / | Ctrl+K or / |
-| Switch tabs (Today first) | ⌘1 – ⌘8 | Ctrl+1 – Ctrl+8 |
+| Switch tabs (Today, Inbox, …) | ⌘1 – ⌘9 | Ctrl+1 – Ctrl+9 |
 | Export a backup | ⇧⌘B | Ctrl+Shift+B |
 | Show all shortcuts | ? | ? |
 | Parse while editing | ⌘↵ | Ctrl+Enter |
 | Light / dark | ⇧⌘L | Ctrl+Shift+L |
 | Settings | ⌘, | Ctrl+, |
+
+## How Inbox tasks are stored
+
+A captured task is an ordinary deliverable with three extra fields (`src: "inbox"`, an optional `prio`, `created`). With a course, it lives in that course; without one, it lives in a built-in **Inbox** course (`course-inbox`) that is saved, synced, backed up and restored like any course but never shown as one. Its items are part of `allItems()`, so Today, Plan, reminders, calendar export, insights, search and the coach include them with no separate code. Tasks without a due date wait in that Inbox course's `drafts` until they get one. Deleting a course moves the tasks you added back to the Inbox instead of deleting them.
+
+Tasks from the Quick Add window are written to `quick-queue.json` in the app's data folder first and removed only after the page has saved them, so a task survives the app closing at the wrong moment.
 
 ## Calendar
 
