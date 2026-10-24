@@ -331,6 +331,7 @@ async function phaseLocal(A) {
   check('the semester GPA shows a likely value and a range', /likely \d\.\d\d.*Ace everything left: \d\.\d\d.*Slip 15 points.*\d\.\d\d/.test(await A.js(`document.getElementById('gpaRange').innerText`)));
 
   await phaseInbox(A);
+  await phaseWeak(A);
 
   console.log('\n# Search and keyboard');
   await A.key('k', { meta: true, ctrl: process.platform !== 'darwin' });
@@ -489,6 +490,71 @@ async function phaseInbox(A) {
   fs.writeFileSync(path.join(TMP, 'profile', 'quick-queue.json'), JSON.stringify([{ id: 'qtestqueued1', title: 'Queued while closed', input: 'Queued while closed', date: dayPlus(3), time: '23:59', type: 'Homework', hours: 1, notes: '', prio: 'normal', cid: null }]));
   await A.reload(); await A.js(`document.querySelector('.nav [data-tab="inbox"]').click()`); await sleep(400);
   check('a task waiting in the queue is added at the next start, exactly once', (await inboxRows(A)).filter(r => /Queued while closed/.test(r)).length === 1 && JSON.parse(fs.readFileSync(path.join(TMP, 'profile', 'quick-queue.json'), 'utf8')).length === 0);
+  await A.js(`document.querySelector('.nav [data-tab="semester"]').click()`);
+}
+
+async function phaseWeak(A) {
+  console.log('\n# Weak spots: what you keep getting wrong');
+  await A.js(`document.querySelector('.nav [data-tab="study"]').click()`); await sleep(200);
+  await A.js(`(() => { const s = document.getElementById('genCourse'); s.value = [...s.options].find(o => /BIO 150/.test(o.textContent)).value; s.dispatchEvent(new Event('change')); document.getElementById('genTopic').value = 'Cell biology'; document.getElementById('genEmpty').click(); })()`); await sleep(200);
+  for (const [topic, n] of [['Cellular respiration', 3], ['Mitosis', 3]]) for (let i = 1; i <= n; i++) {
+    await A.js(`(() => { document.getElementById('cardQ').value = '${topic} question ${i}'; document.getElementById('cardTopic').value = '${topic}'; document.getElementById('cardA').value = '${topic} answer ${i}'; document.getElementById('cardForm').requestSubmit(); })()`); await sleep(60);
+  }
+  await A.js(`document.querySelector('#smModes [data-mode="review"]').click()`); await sleep(100);
+  // Miss every respiration card, get every mitosis card right.
+  for (let i = 0; i < 14; i++) {
+    const q = await A.js(`(document.querySelector('#flash') || {}).innerText || ''`);
+    if (!q) break;
+    await A.js(`document.getElementById('showAns') && document.getElementById('showAns').click()`); await sleep(40);
+    await A.js(`(() => { const resp = /Cellular/.test(document.querySelector('#flash').innerText); document.querySelector('#smBody [data-q="' + (resp ? 0 : 2) + '"]').click(); })()`); await sleep(60);
+  }
+  await sleep(300);
+  let w = await A.js(`({ list: document.getElementById('weakList').innerText, summary: document.getElementById('weakSummary').innerText })`);
+  check('a topic missed again and again is flagged as weak', /Cellular respiration[\s\S]*Weak/.test(w.list), w);
+  check('a topic answered right isn’t', !/Mitosis/.test(w.list), w.list.slice(0, 300));
+  check('the missed questions are shown with their answers', /Cellular respiration question \d[\s\S]*Answer: Cellular respiration answer/.test(w.list));
+  await A.js(`document.querySelector('.nav [data-tab="inbox"]').click()`); await sleep(200);
+  let rows = await inboxRows(A);
+  check('a review session is scheduled automatically', rows.some(r => /Review: Cellular respiration/.test(r) && /Study/.test(r) && /BIO 150/.test(r) && /Practice/.test(r)), rows.filter(r => /Review/.test(r)));
+  await rowAction(A, 'Review: Cellular respiration', '[data-tdone]'); await sleep(300);
+  await A.js(`document.querySelector('.nav [data-tab="study"]').click()`); await sleep(200);
+  w = await A.js(`document.getElementById('weakList').innerText`);
+  check('finishing the review session alone doesn’t count as knowing it', /Weak/.test(w) && /marked done, but your answers don’t show it yet/.test(w), w);
+  const before = await A.js(`document.querySelectorAll('#deckList .deck')[0].innerText`);
+  await A.js(`[...document.querySelectorAll('#weakList [data-wmore]')][0].click()`); await sleep(2500);
+  const after = await A.js(`document.querySelectorAll('#deckList .deck')[0].innerText`);
+  check('Claude writes extra questions on the weak topic', /9 cards/.test(after) && /2-question quiz/.test(after), { before, after });
+  // Practice until the answers show it
+  for (let round = 0; round < 3; round++) {
+    if (round === 0) await A.js(`[...document.querySelectorAll('#weakList [data-wpractice]')][0].click()`);
+    else await A.js(`document.getElementById('practiceAgain') && document.getElementById('practiceAgain').click()`);
+    await sleep(150);
+    if (round === 0) check('practice focuses on the weak topic', /Practice: Cellular respiration/.test(await A.js(`document.getElementById('smTitle').textContent`)));
+    for (let i = 0; i < 12; i++) {
+      if (!(await A.js(`!!document.querySelector('#flash')`))) break;
+      await A.js(`document.getElementById('showAns') && document.getElementById('showAns').click()`); await sleep(30);
+      await A.js(`document.querySelector('#smBody [data-q="2"]').click()`); await sleep(40);
+    }
+  }
+  await sleep(300);
+  w = await A.js(`document.getElementById('weakList').innerText`);
+  check('right answers in practice mark it improved, with before and after', /Cellular respiration[\s\S]*Improved/.test(w) && /0% → (8|9|10)\d?%/.test(w), w);
+  check('and the toast says so', /improved on “Cellular respiration”/.test(await A.js(`document.getElementById('toast').textContent`)) || /Improved/.test(w));
+  await A.js(`document.getElementById('practiceQuiz') && document.getElementById('practiceQuiz').click()`); await sleep(200);
+  const quiz = await A.js(`({ n: document.querySelectorAll('#smBody .quiz-q').length, note: document.querySelector('#smBody .note').innerText })`);
+  check('the quiz can be narrowed to the topic', quiz.n === 2 && /Questions on Cellular respiration only/.test(quiz.note), quiz);
+  const nBefore = await A.js(`document.getElementById('weakSummary').innerText`);
+  await A.js(`(() => { const q = document.querySelector('#smBody .quiz-q'); const wrong = [...q.querySelectorAll('[data-ch]')].find(b => b.dataset.ch !== '1'); wrong.click(); })()`); await sleep(200);
+  check('quiz answers count as evidence too', (await A.js(`document.getElementById('weakSummary').innerText`)) !== nBefore);
+  w = await A.js(`document.getElementById('weakSummary').innerText`);
+  check('studying and knowing are shown apart', /h\s*studied this week/.test(w) && /questions answered/.test(w) && /Only answers count toward mastery/.test(w), w);
+  await A.flushed();
+  await A.reload();
+  await A.js(`document.querySelector('.nav [data-tab="study"]').click()`); await sleep(300);
+  w = await A.js(`document.getElementById('weakList').innerText`);
+  check('answers and results are kept after restarting', /Cellular respiration[\s\S]*Improved/.test(w), w);
+  await A.js(`document.querySelector('.nav [data-tab="insights"]').click(); document.getElementById('repNext').click()`); await sleep(200);
+  check('the weekly report shows what you showed you know', /What you showed you know[\s\S]*questions answered[\s\S]*Improved[\s\S]*Cellular respiration/.test(await A.js(`document.getElementById('repBody').innerText`)));
   await A.js(`document.querySelector('.nav [data-tab="semester"]').click()`);
 }
 

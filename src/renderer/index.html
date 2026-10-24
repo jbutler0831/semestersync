@@ -879,6 +879,32 @@ dialog.settings .key-in:focus { outline: none; border-color: var(--accent); box-
 .bottomnav .nbadge { position: absolute; margin: 0; transform: translate(12px, -8px); }
 .bottomnav button { position: relative; }
 @media (max-width: 420px) { .bottomnav button { font-size: 9px; } }
+
+/* Weak spots */
+#weakPanel { margin-top: 20px; }
+#weakPanel .panel-head { flex-wrap: wrap; row-gap: 8px; }
+.auto-toggle { display: flex; gap: 6px; align-items: center; font-size: 12.5px; color: var(--muted); }
+.ks { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.ks > div { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.ks b { display: block; font: 700 20px var(--f-display); }
+.ks span { color: var(--muted); font-size: 12px; }
+@media (max-width: 640px) { .ks { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.wrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 16px; padding: 12px 0; border-top: 1px solid var(--line); align-items: start; }
+.wrow:first-child { border-top: 0; }
+.wt { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.wt b { font-size: 15px; }
+.wbar { display: grid; grid-template-columns: 160px auto minmax(0, 1fr); gap: 10px; align-items: center; margin-top: 6px; font-size: 12.5px; }
+.wbar .meter { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.wbar .meter i { display: block; height: 100%; border-radius: 4px; }
+.wbar small { color: var(--muted); }
+.missed { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.missed li { padding-left: 10px; border-left: 2px solid var(--crit); }
+.missed small { display: block; color: var(--muted); font-size: 12px; }
+.wacts { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+.pri.good { color: var(--good); background: var(--good-soft); }
+.qtopic { display: inline-block; margin-top: 4px; font: 500 10.5px var(--f-mono); text-transform: uppercase; letter-spacing: .04em; color: var(--faint); }
+.cards .q .qtopic { display: block; }
+@media (max-width: 640px) { .wrow { grid-template-columns: 1fr; } .wacts { flex-direction: row; flex-wrap: wrap; } .wbar { grid-template-columns: 1fr auto; } .wbar small { grid-column: 1 / -1; } }
 </style>
 </head>
 <body>
@@ -1351,6 +1377,18 @@ dialog.settings .key-in:focus { outline: none; border-color: var(--accent); box-
           <div class="seg" role="group" aria-label="Study mode" id="smModes"></div>
         </div>
         <div class="panel-body" id="smBody"></div>
+      </div>
+    </section>
+    <section class="panel" id="weakPanel">
+      <div class="panel-head">
+        <div><div class="eyebrow">Weak spots</div><h2>What you keep getting wrong</h2></div>
+        <div class="spacer"></div>
+        <label class="auto-toggle"><input type="checkbox" id="weakAuto"> Schedule a review when a topic turns weak</label>
+        <button type="button" class="btn sm ghost" id="weakToggle">Show every topic</button>
+      </div>
+      <div class="panel-body" style="display:grid;gap:12px">
+        <div id="weakSummary"></div>
+        <div id="weakList"></div>
       </div>
     </section>
   </div>
