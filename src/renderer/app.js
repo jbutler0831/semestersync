@@ -1364,12 +1364,12 @@ function renderAll() {
   const c = editCourse();
   $('courseTitle').innerHTML = c ? `${tagHtml(c)} <span style="margin-left:4px">${esc(c.title || 'Syllabus')}</span>` : 'No course selected';
   $('removeCourse').hidden = !c;
-  renderCourseBar(); renderReview(); renderSourceMeta(); renderFilters(); renderTable(); renderGrading();
+  renderCourseBar(); renderSyllabusReview(); renderSourceMeta(); renderFilters(); renderTable(); renderGrading();
   const weeks = renderHeat(); renderSummary(weeks); renderSync();
   renderFeatures();
 }
 function renderDerived() {
-  renderCourseBar(); renderReview();
+  renderCourseBar(); renderSyllabusReview();
   const weeks = renderHeat(); renderSummary(weeks); renderSync(); renderGrading(); renderTableNote();
   renderFeatures();
 }
@@ -3107,7 +3107,7 @@ function reviewIssues(c) {
   return { count: flagged.length + (c.review && c.review.pending ? notes.length : 0), notes, flagged };
 }
 let reviewAll = false;
-function renderReview() {
+function renderSyllabusReview() {
   const c = editCourse(), el = $('review');
   if (!c || !c.review || !c.review.pending) {
     const n = c ? reviewIssues(c).flagged.length : 0;
@@ -3144,8 +3144,8 @@ function confirmReview(c) {
 }
 $('review').addEventListener('click', e => {
   const c = editCourse(); if (!c) return;
-  if (e.target.closest('#reviewOpen')) { c.review = { pending: true, at: Date.now() }; renderReview(); return; }
-  if (e.target.closest('#reviewToggle')) { reviewAll = !reviewAll; renderReview(); return; }
+  if (e.target.closest('#reviewOpen')) { c.review = { pending: true, at: Date.now() }; renderSyllabusReview(); return; }
+  if (e.target.closest('#reviewToggle')) { reviewAll = !reviewAll; renderSyllabusReview(); return; }
   if (e.target.closest('#reviewDone')) { confirmReview(c); return; }
   const row = e.target.closest('[data-iid]'); if (!row) return;
   const it = c.items.find(i => i.id === row.dataset.iid); if (!it) return;

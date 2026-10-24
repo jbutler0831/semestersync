@@ -330,6 +330,16 @@ async function phaseLocal(A) {
   check('you can add your own category', (await A.js(`document.querySelectorAll('#calcRows tr').length`)) === nRows + 1);
   check('the semester GPA shows a likely value and a range', /likely \d\.\d\d.*Ace everything left: \d\.\d\d.*Slip 15 points.*\d\.\d\d/.test(await A.js(`document.getElementById('gpaRange').innerText`)));
 
+  console.log('\n# Flashcards');
+  await A.js(`document.querySelector('.nav [data-tab="study"]').click()`); await sleep(200);
+  await A.js(`(() => { document.getElementById('genTopic').value = 'Flashcard check'; document.getElementById('genEmpty').click(); })()`); await sleep(200);
+  await A.js(`(() => { document.getElementById('cardQ').value = 'What is 2 + 2?'; document.getElementById('cardA').value = '4'; document.getElementById('cardForm').requestSubmit(); })()`); await sleep(100);
+  await A.js(`document.querySelector('#smModes [data-mode="review"]').click()`); await sleep(100);
+  check('flashcard review shows the card', /What is 2 \+ 2\?/.test(await A.js(`(document.getElementById('flash') || {}).innerText || ''`)));
+  await A.js(`document.getElementById('showAns').click()`); await sleep(50);
+  await A.js(`document.querySelector('#smBody [data-q="2"]').click()`); await sleep(100);
+  check('rating it finishes the review', /1 card reviewed/.test(await A.js(`document.getElementById('smBody').innerText`)));
+
   console.log('\n# Search and keyboard');
   await A.key('k', { meta: true, ctrl: process.platform !== 'darwin' });
   check('Ctrl/⌘ K opens search', await A.until(`!!document.querySelector('dialog.search-dlg[open]')`, 2000));
