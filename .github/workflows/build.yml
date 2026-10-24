@@ -42,21 +42,23 @@ jobs:
       - run: npm ci
       # Signing and notarization switch on by themselves once these repository secrets exist
       # (see "Signing the installers" in the README). Without them the installers are unsigned.
-      - if: runner.os == 'macOS'
-        run: npm run dist:mac -- --publish never
+      # An empty CSC_LINK makes electron-builder look for a certificate at the project folder,
+      # so the signing variables are only set when the secrets exist.
+      - name: Build the installer
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then CERT="$MAC_CERT"; PASS="$MAC_PASS"; TARGET=dist:mac; else CERT="$WIN_CERT"; PASS="$WIN_PASS"; TARGET=dist:win; fi
+          if [ -n "$CERT" ]; then export CSC_LINK="$CERT" CSC_KEY_PASSWORD="$PASS"; else export CSC_IDENTITY_AUTO_DISCOVERY=false; echo "No signing certificate set: building unsigned"; fi
+          for v in APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do [ -z "${!v}" ] && unset $v; done
+          npm run $TARGET -- --publish never
         env:
-          CSC_LINK: ${{ secrets.MAC_CERT_P12_BASE64 }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.MAC_CERT_P12_BASE64 != '' }}
+          MAC_CERT: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          MAC_PASS: ${{ secrets.MAC_CERT_PASSWORD }}
+          WIN_CERT: ${{ secrets.WIN_CERT_P12_BASE64 }}
+          WIN_PASS: ${{ secrets.WIN_CERT_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      - if: runner.os == 'Windows'
-        run: npm run dist:win -- --publish never
-        env:
-          CSC_LINK: ${{ secrets.WIN_CERT_P12_BASE64 }}
-          CSC_KEY_PASSWORD: ${{ secrets.WIN_CERT_PASSWORD }}
-          CSC_IDENTITY_AUTO_DISCOVERY: false
       - name: Install and start the built app
         shell: bash
         run: scripts/verify-installer.sh
