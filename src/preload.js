@@ -55,6 +55,17 @@ contextBridge.exposeInMainWorld('desktop', {
       return () => ipcRenderer.removeListener('room:' + name, h);
     },
   },
-  saveIcs: (text, open) => ipcRenderer.invoke('ics:save', { text, open }),
+  files: { save: (name, text, open) => ipcRenderer.invoke('file:save', { name, text, open }) },
+  backup: {
+    auto: text => ipcRenderer.invoke('backup:auto', text),
+    list: () => ipcRenderer.invoke('backup:list'),
+    read: name => ipcRenderer.invoke('backup:read', name),
+    openFolder: () => ipcRenderer.invoke('backup:open-folder'),
+  },
+  sources: {
+    keep: (cid, name, bytes) => ipcRenderer.invoke('source:keep', { cid, name, bytes }),
+    open: cid => ipcRenderer.invoke('source:open', cid),
+    clear: () => ipcRenderer.invoke('source:clear'),
+  },
   onMenu: (name, fn) => ipcRenderer.on('menu:' + name, () => fn()),
 });

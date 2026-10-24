@@ -125,7 +125,7 @@ const uid = () => Math.random().toString(36).slice(2, 8);
 const state = {
   courses: [], view: 'all', editId: null, gradeId: null,
   sortKey: 'date', sortDir: 1, filter: 'All',
-  synced: null, lastSync: null, connected: false, freshIds: new Set(),
+  freshIds: new Set(), q: '', show: 'all',
   parser: 'local', aiReady: false, dirty: false,
 };
 
@@ -349,6 +349,7 @@ Syllabus:
 ${numbered}`;
 }
 async function parseWithClaude(text, cid, onProgress) {
+  if (text.length > 150000) throw { code: 'prompt_too_large' };
   aiCtl = new AbortController();
   const raw = await sampleFn.json(aiPrompt(text), {
     signal: aiCtl.signal, modelTier: 'default',
@@ -459,9 +460,18 @@ function summaryLog(c) {
 }
 function applyResult(c, r, parser) {
   const prev = new Set(c.items.map(i => i.id + i.date + i.title));
-  const mine = new Map(c.items.map(i => [i.title.toLowerCase() + '|' + i.date, i]));
+  const old = c.items;
+  const mine = new Map(old.map(i => [i.title.toLowerCase() + '|' + i.date, i]));
   Object.assign(c, { code: r.code, title: r.title, categories: r.categories, items: r.items, parser });
-  c.items.forEach(i => { const o = mine.get(i.title.toLowerCase() + '|' + i.date); if (o) for (const k of ['done', 'doneAt', 'score', 'spent']) if (o[k] != null) i[k] = o[k]; });
+  // Keep progress across re-parses: match on title and date, else on date and type when that's unique.
+  const used = new Set();
+  c.items.forEach(i => {
+    let o = mine.get(i.title.toLowerCase() + '|' + i.date);
+    if (!o) { const same = old.filter(x => x.date === i.date && x.type === i.type); if (same.length === 1) o = same[0]; }
+    if (!o || used.has(o)) return;
+    used.add(o);
+    for (const k of ['done', 'doneAt', 'score', 'spent', 'locks', 'backfilled', 'checked']) if (o[k] != null) i[k] = o[k];
+  });
   state.freshIds = new Set(c.items.filter(i => !prev.has(i.id + i.date + i.title)).map(i => i.id));
 }
 let running = false;
@@ -492,6 +502,7 @@ async function runParse(animate) {
     const prog = logLine('Waiting for Claude (the first reply can take up to a minute)…');
     $('stopBtn').hidden = false;
     let started = false;
+    const slow = setTimeout(() => logLine('Still working. Long syllabi can take a couple of minutes. <b>Stop</b> keeps what you had before.', 'wn'), 45000);
     try {
       result = await parseWithClaude(c.text, c.id, n => {
         if (!started) { started = true; times[0] = Math.round(performance.now() - t0) + ' ms'; st[0] = 'done'; st[1] = 'run'; renderSteps(steps, st, times); }
@@ -502,6 +513,7 @@ async function runParse(animate) {
       st[0] = st[1] = 'done'; renderSteps(steps, st, times);
       logLine(`Claude returned <b>${result.items.length}</b> deliverables`, 'ok');
     } catch (e) {
+      clearTimeout(slow);
       $('stopBtn').hidden = true;
       st[0] = st[1] = 'done'; times[1] = 'fallback';
       logLine(aiErrorCopy(e), 'wn');
@@ -509,6 +521,7 @@ async function runParse(animate) {
       if (e && e.code === 'cancelled') { renderSteps(steps, steps.map(() => 'wait'), []); renderAnnotated(false); running = false; $('parseBtn').disabled = false; return; }
       result = parseLocal(c.text, c.id);
     }
+    clearTimeout(slow);
     $('stopBtn').hidden = true;
     applyResult(c, result, parser);
     renderAnnotated(true);
@@ -540,14 +553,18 @@ async function runParse(animate) {
   if (useAi) [logs[3], logs[4], logs[5]].forEach(([h, k]) => logLine(h, k));
   else logLine(logs[5][0], logs[5][1]);
   $('annotated').scrollTop = 0;
+  c.review = { pending: true, at: Date.now() };
+  delete c.sample;
   renderAll(); markDirty();
-  toast(`${c.code}: ${c.items.length} deliverables${parser === 'ai' ? ' (Claude)' : ''}`);
+  const flagged = reviewIssues(c).count;
+  toast(`${c.code}: ${c.items.length} deliverables${parser === 'ai' ? ' (Claude)' : ''}${flagged ? ` · ${flagged} to check` : ''}`);
+  if (flagged || c.items.length) $('review').scrollIntoView({ block: 'nearest', behavior: reduce ? 'auto' : 'smooth' });
   running = false; $('parseBtn').disabled = false;
 }
 function setParser(p) {
   state.parser = p;
   $('useAi').setAttribute('aria-pressed', p === 'ai'); $('useLocal').setAttribute('aria-pressed', p !== 'ai');
-  $('modelTag').textContent = p === 'ai' ? 'Claude Opus 5.5 · your API key' : 'local rules · runs in-browser';
+  $('modelTag').textContent = p === 'ai' ? (window.desktop ? 'Claude Opus 5.5 · your API key' : 'Claude · uses your Claude account') : 'local rules · runs in-browser';
   $('parseBtn').lastChild.textContent = p === 'ai' ? ' Parse with Claude' : ' Re-parse syllabus';
 }
 
@@ -588,11 +605,13 @@ const tagHtml = c => c ? `<span class="course-tag"><i style="background:${colorO
 /* ---------- Render: course bar ---------- */
 function renderCourseBar() {
   const total = allItems().length;
+  const samples = state.courses.filter(c => c.sample).length;
   $('coursebar').innerHTML =
     `<button type="button" class="cchip" data-view="all" aria-pressed="${state.view === 'all'}">All courses<span class="c">${total}</span></button>` +
-    state.courses.map(c => `<button type="button" class="cchip" data-view="${c.id}" aria-pressed="${state.view === c.id}"><span class="dot" style="background:${colorOf(c)}"></span>${esc(c.code)}<span class="c">${c.items.length}</span></button>`).join('') +
+    state.courses.map(c => { const n = c.review && c.review.pending ? reviewIssues(c).count : 0; return `<button type="button" class="cchip" data-view="${c.id}" aria-pressed="${state.view === c.id}"><span class="dot" style="background:${colorOf(c)}"></span>${esc(c.code)}${c.sample ? '<span class="tagline">sample</span>' : ''}<span class="c">${c.items.length}</span>${n ? `<span class="flag" title="${n} item${n > 1 ? 's' : ''} to check">${n}</span>` : ''}</button>`; }).join('') +
     (state.courses.length < MAX_COURSES ? `<button type="button" class="cchip add" id="addCourse">+ Add course</button>` : '') +
-    `<span class="save-status" id="saveStatus"></span>`;
+    (samples ? `<button type="button" class="cchip ghost" id="clearSamples" title="Remove the sample courses and keep your own">Clear samples</button>` : '') +
+    `<button type="button" class="save-status" id="saveStatus" title="Your data: backups and sync"></button>`;
   paintSaveStatus();
 }
 
@@ -649,7 +668,7 @@ function gcalUrl(it) {
 function renderTable() {
   const k = state.sortKey, dir = state.sortDir, showCourse = state.view === 'all';
   $('thCourse').hidden = !showCourse;
-  const list = visibleItems().filter(i => state.filter === 'All' || i.type === state.filter).sort((a, b) => {
+  const list = visibleItems().filter(i => (state.filter === 'All' || i.type === state.filter) && matchesShow(i) && matchesQuery(i)).sort((a, b) => {
     const va = k === 'date' ? a.date + a.time : a[k], vb = k === 'date' ? b.date + b.time : b[k];
     return (va > vb ? 1 : va < vb ? -1 : 0) * dir;
   });
@@ -675,9 +694,23 @@ function renderTable() {
         <button type="button" class="icon-btn" data-del="${it.id}" title="Remove" aria-label="Remove ${esc(it.title)}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
         <label class="switch" title="Include in calendar sync"><input type="checkbox" id="sync-${it.id}" data-k="sync" ${it.sync ? 'checked' : ''} aria-label="Sync ${esc(it.title)}"><span></span></label>
       </div></td></tr>`;
-  }).join('') : `<tr class="empty-row"><td colspan="${showCourse ? 9 : 8}">${state.courses.length ? 'No deliverables found. Paste a syllabus with dated lines like “Oct 14 Midterm exam” and parse again.' : 'No courses yet. Add a course to get started.'}</td></tr>`;
+  }).join('') : `<tr class="empty-row"><td colspan="${showCourse ? 9 : 8}">${state.q || state.show !== 'all' ? `Nothing matches${state.q ? ` “${esc(state.q)}”` : ''}. <button type="button" class="linkish" id="clearSearch">Clear the search</button>` : state.courses.length ? 'No deliverables found. Paste a syllabus with dated lines like “Oct 14 Midterm exam” and parse again.' : 'No courses yet. Add a course to get started.'}</td></tr>`;
   state.freshIds = new Set();
   renderTableNote();
+}
+const matchesQuery = i => {
+  if (!state.q) return true;
+  const c = itemCourse(i), hay = `${i.title} ${i.notes} ${i.type} ${c ? c.code + ' ' + c.title : ''} ${fmtDay(dueDate(i))}`.toLowerCase();
+  return state.q.toLowerCase().split(/\s+/).filter(Boolean).every(w => hay.includes(w));
+};
+function matchesShow(i) {
+  switch (state.show) {
+    case 'upcoming': return !i.done && dueDate(i) >= TODAY;
+    case 'past': return dueDate(i) < TODAY;
+    case 'done': return !!i.done;
+    case 'check': return reviewFlags(itemCourse(i), i).length > 0;
+    default: return true;
+  }
 }
 function renderTableNote() {
   const items = visibleItems();
@@ -858,137 +891,357 @@ function buildEvents() {
   }
   return evs.sort((a, b) => a.when - b.when || a.time.localeCompare(b.time));
 }
+// Compares the plan with the last calendar export, so a second export only carries what changed.
 function diffEvents(evs) {
-  const prev = state.synced || new Map();
-  const res = { add: 0, upd: 0, ok: 0, status: new Map() };
+  const prev = new Map(Object.entries(extras.cal.exported || {}));
+  const res = { add: 0, upd: 0, ok: 0, status: new Map(), first: !prev.size };
   for (const e of evs) {
     const p = prev.get(e.id);
-    const s = p == null ? 'add' : p !== e.hash ? 'upd' : 'ok';
+    const s = p == null ? 'add' : p.h !== e.hash ? 'upd' : 'ok';
     res[s]++; res.status.set(e.id, s);
   }
   const ids = new Set(evs.map(e => e.id));
-  res.removed = [...prev.keys()].filter(k => !ids.has(k));
+  res.removed = [...prev.entries()].filter(([k]) => !ids.has(k)).map(([k, v]) => ({ id: k, title: v.t || 'Event', when: v.d }));
   res.del = res.removed.length;
   return res;
 }
-const LABEL = { add: 'New', upd: 'Changed', ok: 'In sync' };
-let syncing = false;
+const LABEL = { add: 'New', upd: 'Changed', ok: 'Exported' };
 function renderSync() {
   $('calNameField').hidden = $('perCourse').checked;
   const evs = buildEvents(), df = diffEvents(evs);
-  const pending = df.add + df.upd + df.del;
+  const onlyNew = !df.first && $('calOnlyNew').checked;
+  const pending = df.add + df.upd;
   const cals = new Set(evs.map(e => e.cal)).size;
-  $('diff').innerHTML = state.synced
-    ? (pending ? `${df.add ? `<span class="add">+${df.add} new</span>` : ''}${df.upd ? `<span class="upd">~${df.upd} changed</span>` : ''}${df.del ? `<span class="del">−${df.del} removed</span>` : ''}<span>${df.ok} in sync</span>` : `<span class="add">✓ Calendar is up to date</span>`)
-    : `<span>${evs.length} events</span><span>${cals} calendar${cals === 1 ? '' : 's'}</span><span>${evs.filter(e => e.kind === 'study').length} study blocks</span>`;
-  $('syncBtn').disabled = !state.connected || syncing || !!(state.synced && !pending) || !evs.length && !df.del;
-  $('syncBtn').textContent = !state.connected ? 'Connect to sync' : state.synced ? (pending ? `Push ${pending} change${pending > 1 ? 's' : ''}` : 'Up to date') : `Sync ${evs.length} events`;
-  const removedRows = df.removed.map(() => `<li><span class="ck"></span><span class="when">—</span><span class="what" style="color:var(--muted)">Event no longer in your plan</span><span class="st del">Remove</span></li>`).join('');
+  $('calOnlyNewRow').hidden = df.first;
+  $('diff').innerHTML = df.first
+    ? `<span>${evs.length} events</span><span>${cals} calendar${cals === 1 ? '' : 's'}</span><span>${evs.filter(e => e.kind === 'study').length} study blocks</span>`
+    : (pending || df.del ? `${df.add ? `<span class="add">+${df.add} new</span>` : ''}${df.upd ? `<span class="upd">~${df.upd} changed</span>` : ''}${df.del ? `<span class="del">−${df.del} removed</span>` : ''}<span>${df.ok} already exported</span>` : `<span class="add">✓ Your calendar file is up to date</span>`);
+  const n = onlyNew ? pending : evs.length;
+  $('syncBtn').disabled = !n;
+  $('syncBtn').textContent = !evs.length ? 'Nothing to export' : onlyNew ? (pending ? `Export ${pending} new or changed event${pending > 1 ? 's' : ''}` : 'Up to date') : `${window.desktop ? 'Add' : 'Download'} ${evs.length} events${window.desktop ? ' to your calendar' : ' (.ics)'}`;
+  const removedRows = df.removed.map(r => `<li><span class="ck"></span><span class="when">${r.when ? fmtDay(fromIso(r.when)) : '—'}</span><span class="what" style="color:var(--muted)">${esc(r.title)}</span><span class="st del">Delete it</span></li>`).join('');
   const many = state.courses.length > 1;
   $('events').innerHTML = evs.length || removedRows ? evs.map(e => {
-    const s = state.synced ? df.status.get(e.id) : 'add';
-    return `<li data-e="${e.id}"><span class="ck${state.synced && s === 'ok' ? ' done' : ''}"><svg viewBox="0 0 10 10" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5.2l2 2 4-4.4"/></svg></span><span class="when">${fmtDay(e.when)}</span><span class="what" title="${esc(e.c.code + ': ' + e.title)}">${many ? `<span class="course-tag" style="margin-right:6px"><i style="background:${colorOf(e.c)}"></i>${esc(e.c.code)}</span>` : ''}${e.kind === 'study' ? '<span style="color:var(--muted)">' + esc(e.title) + '</span>' : esc(e.title)} <span class="due-meta" style="padding:0">${fmtTime(e.time)}</span></span><span class="st ${state.synced ? s : ''}">${state.synced ? LABEL[s] : e.kind === 'study' ? 'Block' : 'Deadline'}</span></li>`;
-  }).join('') + removedRows : `<li style="display:block;color:var(--muted)">Nothing selected to sync. Turn on rows in the Deliverables table.</li>`;
-  $('ics').textContent = buildIcs(evs);
-  $('syncNote').innerHTML = state.lastSync ? `Last sync ${state.lastSync.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} to ${cals} calendar${cals === 1 ? '' : 's'}. Edits in the table show up here as pending changes.` : `Each deadline becomes a 30-minute event ending at its due time. Exams with a start time get a 2-hour block.`;
+    const s = df.status.get(e.id);
+    return `<li data-e="${e.id}"><span class="ck${!df.first && s === 'ok' ? ' done' : ''}"><svg viewBox="0 0 10 10" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5.2l2 2 4-4.4"/></svg></span><span class="when">${fmtDay(e.when)}</span><span class="what" title="${esc(e.c.code + ': ' + e.title)}">${many ? `<span class="course-tag" style="margin-right:6px"><i style="background:${colorOf(e.c)}"></i>${esc(e.c.code)}</span>` : ''}${e.kind === 'study' ? '<span style="color:var(--muted)">' + esc(e.title) + '</span>' : esc(e.title)} <span class="due-meta" style="padding:0">${fmtTime(e.time)}</span></span><span class="st ${df.first ? '' : s}">${df.first ? (e.kind === 'study' ? 'Block' : 'Deadline') : LABEL[s]}</span></li>`;
+  }).join('') + removedRows : `<li style="display:block;color:var(--muted)">Nothing selected to export. Turn on rows in the Deliverables table.</li>`;
+  $('ics').textContent = buildIcs(onlyNew ? evs.filter(e => df.status.get(e.id) !== 'ok') : evs);
+  const unchecked = state.courses.filter(c => c.review && c.review.pending && reviewIssues(c).count);
+  const at = extras.cal.at ? new Date(extras.cal.at) : null;
+  $('syncNote').innerHTML = [
+    unchecked.length ? `<span class="badge warn">Check first</span> ${unchecked.map(c => esc(c.code)).join(', ')} still ${unchecked.length > 1 ? 'have' : 'has'} dates to check. <button type="button" class="linkish" data-review="${unchecked[0].id}">Review now</button>` : '',
+    at ? `Last exported ${fmtDay(at)}, ${at.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}. Changes you make afterwards show up here.` : 'Each deadline becomes a 30-minute event ending at its due time. Exams with a start time get a 2-hour block.',
+    df.upd ? 'Changed events keep the same ID, so most calendar apps update them on import. If you see a duplicate, delete the older one.' : '',
+    df.del ? 'Calendar files can’t delete events. Remove the ones marked “Delete it” in your calendar app.' : '',
+  ].filter(Boolean).map(s => `<p style="margin:0 0 4px">${s}</p>`).join('');
 }
+// RFC 5545 text: escape \ ; , and newlines, and fold lines longer than 75 octets.
+const icsText = s => String(s).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+function icsFold(line) {
+  const out = []; let cur = '', bytes = 0;
+  for (const ch of line) {
+    const b = new TextEncoder().encode(ch).length;
+    if (bytes + b > (out.length ? 74 : 75)) { out.push(cur); cur = ''; bytes = 0; }
+    cur += ch; bytes += b;
+  }
+  out.push(cur);
+  return out.join('\r\n ');
+}
+const utcStamp = d => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
 function buildIcs(evs) {
-  const rems = reminderMins();
-  const out = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//SemesterSync//EN', `X-WR-CALNAME:${$('perCourse').checked ? 'Semester deadlines' : calFor({})}`];
+  const rems = reminderMins(), now = utcStamp(new Date());
+  const seq = extras.cal.seq || {}, prev = extras.cal.exported || {};
+  const out = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//SemesterSync//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', `X-WR-CALNAME:${icsText($('perCourse').checked ? 'Semester deadlines' : calFor({}))}`];
   for (const e of evs) {
     let s, f;
     if (e.kind === 'study') { const [h, m] = e.time.split(':').map(Number); s = new Date(e.when.getFullYear(), e.when.getMonth(), e.when.getDate(), h, m); f = new Date(s.getTime() + 90 * 60000); }
     else [s, f] = eventWindow(e.it);
-    out.push('BEGIN:VEVENT', `UID:${e.id}-${iso(e.when)}@syllabus-sync`, `DTSTART:${icsStamp(s)}`, `DTEND:${icsStamp(f)}`,
-      `SUMMARY:${(e.c.code + ': ' + e.title).replace(/[,;]/g, '\\$&')}`, `CATEGORIES:${e.c.code.replace(/[,;]/g, '')}`,
-      `DESCRIPTION:${e.it.type}${e.it.weight ? ` · ${e.it.weight}% of grade` : ''} · est. ${fmtH(e.it.hours)} h`);
-    if (e.kind === 'due') rems.forEach(r => out.push('BEGIN:VALARM', 'ACTION:DISPLAY', `TRIGGER:-PT${r}M`, `DESCRIPTION:${e.title}`, 'END:VALARM'));
+    const n = (seq[e.id] || 0) + (prev[e.id] && prev[e.id].h !== e.hash ? 1 : 0);
+    out.push('BEGIN:VEVENT', `UID:${e.id}@semestersync`, `DTSTAMP:${now}`, `SEQUENCE:${n}`, `DTSTART:${icsStamp(s)}`, `DTEND:${icsStamp(f)}`,
+      `SUMMARY:${icsText(e.c.code + ': ' + e.title)}`, `CATEGORIES:${icsText(e.c.code)}`,
+      `DESCRIPTION:${icsText(`${e.it.type}${e.it.weight ? ` · ${e.it.weight}% of grade` : ''} · est. ${fmtH(e.it.hours)} h${e.it.notes ? `\n${e.it.notes}` : ''}`)}`);
+    if (e.kind === 'due') rems.forEach(r => out.push('BEGIN:VALARM', 'ACTION:DISPLAY', `TRIGGER:-PT${r}M`, `DESCRIPTION:${icsText(e.title)}`, 'END:VALARM'));
     out.push('END:VEVENT');
   }
   out.push('END:VCALENDAR');
-  return out.join('\n');
+  return out.map(icsFold).join('\r\n') + '\r\n';
 }
+let exporting = false;
 async function doSync() {
-  if (syncing) return;
-  syncing = true; $('syncBtn').disabled = true;
+  if (exporting) return;
   const evs = buildEvents(), df = diffEvents(evs);
-  const work = evs.filter(e => !state.synced || df.status.get(e.id) !== 'ok');
-  $('progress').style.width = '0%';
-  let n = 0;
-  for (const e of work) {
-    const li = document.querySelector(`#events li[data-e="${e.id}"]`);
-    await wait(45);
-    if (li) { li.querySelector('.ck').classList.add('done'); li.scrollIntoView({ block: 'nearest' }); }
-    n++; $('progress').style.width = (n / Math.max(work.length, 1) * 100) + '%';
-  }
-  await wait(200);
-  state.synced = new Map(evs.map(e => [e.id, e.hash]));
-  state.lastSync = new Date();
-  syncing = false;
-  const total = work.length + df.del;
-  toast(`Synced ${total} change${total === 1 ? '' : 's'} (simulated)`);
+  const onlyNew = !df.first && $('calOnlyNew').checked;
+  const list = onlyNew ? evs.filter(e => df.status.get(e.id) !== 'ok') : evs;
+  if (!list.length) return;
+  exporting = true; $('syncBtn').disabled = true;
+  const res = await saveFile('semester-deadlines.ics', buildIcs(list), 'text/calendar', { open: true });
+  exporting = false;
+  if (res === 'saved' || res === 'opened') {
+    const seq = extras.cal.seq || (extras.cal.seq = {}), prev = extras.cal.exported || {};
+    for (const e of list) if (prev[e.id] && prev[e.id].h !== e.hash) seq[e.id] = (seq[e.id] || 0) + 1;
+    const next = {};
+    for (const e of evs) if (!onlyNew || list.includes(e) || prev[e.id]) next[e.id] = list.includes(e) || !prev[e.id] ? { h: e.hash, t: `${e.c.code}: ${e.title}`, d: iso(e.when) } : prev[e.id];
+    extras.cal.exported = next; extras.cal.at = Date.now();
+    for (const k of Object.keys(seq)) if (!next[k]) delete seq[k];
+    markDirty();
+    toast(res === 'opened' ? `Opened ${list.length} event${list.length > 1 ? 's' : ''} in your calendar app to import` : `Saved ${list.length} event${list.length > 1 ? 's' : ''}. Open the file to import it.`);
+  } else if (res === 'unsupported') {
+    $('icsBox').open = true; $('ics').scrollIntoView({ block: 'nearest' });
+    toast('Downloads aren’t available here. Copy the .ics text instead.');
+  } else if (res === 'failed') toast('Couldn’t save the calendar file.');
   $('events').scrollTop = 0;
   renderSync();
 }
 
-/* ---------- Saving ---------- */
-const store = { mode: 'none', col: null, saved: new Map(), timer: null, status: 'sample', busy: false };
+/* ---------- Saving & sync ---------- */
+// Signed out, everything is saved on this device. Signed in, each course, study set and the
+// settings doc is its own document in the account, and this device keeps a cached copy so it
+// works offline. Every save first reads the account: a document only another device changed is
+// taken as is; when both sides changed it, the newer edit wins and the other copy goes to the
+// safety copies in Your data, so nothing is lost.
+const HERE = window.desktop ? 'on this computer' : 'in this browser';
+const store = { mode: 'none', col: null, base: new Map(), timer: null, status: 'sample', busy: false, uid: null, who: '', signedOut: false, lastOk: null, fails: 0, retryAt: 0, dirtySince: 0, loaded: false, problem: '' };
 const STORE_KEY = 'ssync-courses-v1';
-const serialize = c => JSON.stringify({ id: c.id, code: c.code, title: c.title, text: c.text, categories: c.categories, items: c.items, color: c.color, parser: c.parser, order: c.order, credits: c.credits, target: c.target, override: c.override });
+const CACHE_KEY = 'ssync-account-cache-v1';
+const serialize = c => JSON.stringify({ id: c.id, code: c.code, title: c.title, text: c.text, categories: c.categories, items: c.items, color: c.color, parser: c.parser, order: c.order, credits: c.credits, target: c.target, override: c.override, sample: c.sample || undefined, source: c.source, review: c.review });
+function localDocs() {
+  const m = new Map();
+  for (const c of state.courses) m.set('course-' + c.id, serialize(c));
+  for (const [id, json] of extraDocs()) m.set(id, json);
+  return m;
+}
+const isDocId = id => id === 'extras' || id.startsWith('deck-') || id.startsWith('course-');
+const acctName = () => store.who ? `${store.who}'s account` : 'your account';
+const clockTime = t => new Date(t).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 function paintSaveStatus() {
   const el = $('saveStatus'); if (!el) return;
+  const when = store.lastOk ? ` · ${clockTime(store.lastOk)}` : '';
+  const secs = Math.max(0, Math.ceil((store.retryAt - Date.now()) / 1000));
   const copy = {
-    sample: ['', store.mode === 'db' ? 'Sample courses · your changes save to your account' : store.mode === 'local' ? 'Sample courses · your changes save on this computer' : 'Sample courses'],
+    sample: ['', store.mode === 'db' ? `Sample courses · your changes save to ${acctName()}` : store.mode === 'local' ? `Sample courses · your changes save ${HERE}${store.signedOut && !window.desktop ? '. Sign in to Claude to keep them on every device' : ''}` : 'Sample courses'],
     saving: ['busy', 'Saving…'],
-    saved: ['ok', store.mode === 'db' ? 'Saved to your account' : 'Saved on this computer'],
-    error: ['err', 'Couldn\'t save. Changes are kept on this page until you reload.'],
+    saved: ['ok', store.mode === 'db' ? `Synced to ${acctName()}${when}` : `Saved ${HERE}${when}`],
+    retry: ['warn', `Offline · saved ${HERE}, syncing again ${secs ? `in ${secs} s` : 'now'}`],
+    conflict: ['warn', `Synced · kept the newer copy of a change from another device`],
+    error: ['err', 'Couldn\'t save. Open Your data and export a backup so nothing is lost.'],
     none: ['', 'Changes last until you reload'],
   }[store.status] || ['', ''];
   el.className = 'save-status ' + copy[0]; el.textContent = copy[1];
+  if (dataDlg && dataDlg.open) paintDataStatus();
 }
 function markDirty() {
   state.dirty = true;
+  if (!store.dirtySince) store.dirtySince = Date.now();
   if (store.mode === 'none') { store.status = 'none'; paintSaveStatus(); return; }
-  store.status = 'saving'; paintSaveStatus();
+  if (store.unloaded) { paintSaveStatus(); return; } // retryLoad saves once the account answers
+  if (store.status !== 'retry') { store.status = 'saving'; paintSaveStatus(); }
   clearTimeout(store.timer);
-  store.timer = setTimeout(flushSave, 800);
+  store.timer = setTimeout(flushSave, store.status === 'retry' ? Math.max(800, store.retryAt - Date.now()) : 800);
 }
+function writeCache(docs) {
+  if (store.mode !== 'db' || !store.uid) return;
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ uid: store.uid, docs: [...docs], base: [...store.base], dirtySince: store.dirtySince })); } catch (_) { /* full: the account still has the data */ }
+}
+function readCache() {
+  try { const c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null'); return c && c.uid === store.uid ? { docs: new Map(c.docs), base: new Map(c.base), dirtySince: +c.dirtySince || 0 } : null; } catch (_) { return null; }
+}
+async function readRemote() {
+  const snap = await store.col.get();
+  const m = new Map(); let meta = false;
+  for (const d of snap.docs) {
+    if (!d.exists) continue;
+    if (d.id === 'meta') { meta = true; continue; }
+    if (!isDocId(d.id)) continue;
+    try { const b = d.data() || {}; if (typeof b.json === 'string') m.set(d.id, { json: b.json, at: +b.at || 0 }); } catch (_) { /* skip unreadable */ }
+  }
+  return { docs: m, meta };
+}
+// Three-way merge of this device's documents against the account, using the last synced copy as the base.
+function reconcile(remote, mine) {
+  const push = [], drop = [], adopt = new Map(), lost = [];
+  const ids = new Set([...store.base.keys(), ...remote.keys(), ...mine.keys()]);
+  for (const id of ids) {
+    const b = store.base.get(id), r = remote.has(id) ? remote.get(id).json : undefined, l = mine.get(id);
+    if (l === r) { if (r === undefined) store.base.delete(id); else store.base.set(id, r); continue; }
+    const localChanged = l !== b, remoteChanged = r !== b;
+    if (localChanged && !remoteChanged) { if (l === undefined) drop.push(id); else push.push(id); continue; }
+    if (remoteChanged && !localChanged) { adopt.set(id, r); continue; }
+    // Both sides changed. A deletion never beats an edit; otherwise the newer edit wins.
+    if (l === undefined) { adopt.set(id, r); continue; }
+    if (r === undefined) { push.push(id); continue; }
+    if ((remote.get(id).at || 0) > (store.dirtySince || Date.now())) { adopt.set(id, r); lost.push([id, l]); }
+    else { push.push(id); lost.push([id, r]); }
+  }
+  return { push, drop, adopt, lost };
+}
+function applyDocs(adopt) {
+  if (!adopt.size) return;
+  const byId = new Map(state.courses.map(c => [c.id, c]));
+  const ex = [];
+  for (const [id, json] of adopt) {
+    if (id.startsWith('course-')) {
+      const cid = id.slice(7);
+      if (json === undefined) { byId.delete(cid); continue; }
+      try { const c = cleanCourse(JSON.parse(json)); if (c) byId.set(cid, c); } catch (_) { /* skip */ }
+    } else ex.push([id, json]);
+  }
+  state.courses = [...byId.values()].sort((a, b) => (a.order || 0) - (b.order || 0)).slice(0, MAX_COURSES);
+  state.courses.forEach(c => c.items.forEach(it => { it.cid = c.id; }));
+  if (ex.length) {
+    const merged = new Map(extraDocs());
+    for (const [id, json] of ex) { if (json === undefined) merged.delete(id); else merged.set(id, json); }
+    adoptExtras([...merged]);
+  }
+  if (!courseById(state.editId)) state.editId = state.courses[0] ? state.courses[0].id : null;
+  if (state.view !== 'all' && !courseById(state.view)) state.view = 'all';
+  renderAnnotated(false); renderAll();
+}
+let syncP = null;
+async function syncNow(quiet) {
+  if (syncP) return syncP;
+  syncP = (async () => {
+    const remote = await readRemote();
+    const mine = localDocs();
+    const plan = reconcile(remote.docs, mine);
+    if (!remote.meta) { await store.col.doc('meta').set({ v: 1 }); }
+    const at = Date.now();
+    for (const id of plan.push) { const json = mine.get(id); await store.col.doc(id).set({ json, at }); store.base.set(id, json); }
+    for (const id of plan.drop) { await store.col.doc(id).delete(); store.base.delete(id); }
+    for (const [id, json] of plan.adopt) { if (json === undefined) store.base.delete(id); else store.base.set(id, json); }
+    applyDocs(plan.adopt);
+    for (const [id, json] of plan.lost) {
+      let name = 'a setting';
+      try { const v = JSON.parse(json); name = id.startsWith('course-') ? v.code : id.startsWith('deck-') ? `study set “${v.name}”` : 'your planner and GPA settings'; } catch (_) {}
+      snapshot(`Other copy of ${name} (edited on two devices)`, null, { only: [id, json] });
+    }
+    store.dirtySince = 0;
+    writeCache(localDocs());
+    if (plan.lost.length && !quiet) toast('Edited on two devices: kept the newer copy. The other is in Your data → Safety copies.');
+    return plan;
+  })();
+  try { return await syncP; } finally { syncP = null; }
+}
+const RETRY_S = [5, 15, 30, 60, 120];
 async function flushSave() {
   if (store.busy) { store.timer = setTimeout(flushSave, 400); return; }
   store.busy = true;
   try {
     if (store.mode === 'db') {
-      const ids = new Set(state.courses.map(c => c.id));
-      if (!store.saved.has('meta')) { await store.col.doc('meta').set({ v: 1 }); store.saved.set('meta', '1'); }
-      for (const c of state.courses) {
-        const s = serialize(c);
-        if (store.saved.get(c.id) !== s) { await store.col.doc('course-' + c.id).set({ json: s }); store.saved.set(c.id, s); }
-      }
-      const extra = new Map(extraDocs());
-      for (const [docId, json] of extra) if (store.saved.get(docId) !== json) { await store.col.doc(docId).set({ json }); store.saved.set(docId, json); }
-      for (const id of [...store.saved.keys()]) {
-        if (id === 'meta' || ids.has(id) || extra.has(id)) continue;
-        await store.col.doc(id === 'extras' || id.startsWith('deck-') ? id : 'course-' + id).delete(); store.saved.delete(id);
-      }
-    } else if (store.mode === 'local') {
-      saveLocal();
-    }
-    store.status = 'saved';
-  } catch (e) { store.status = 'error'; }
+      const plan = await syncNow();
+      store.status = plan.lost.length ? 'conflict' : 'saved';
+      store.fails = 0;
+    } else if (store.mode === 'local') { saveLocal(); store.status = 'saved'; }
+    if (store.mode !== 'none') { store.lastOk = Date.now(); autoBackup(); }
+  } catch (e) {
+    const denied = e && /not_granted|not_permitted|forbidden|permission/i.test(String(e.code || ''));
+    if (store.mode === 'db' && denied) {
+      // The account store refused the write: keep this person's courses on this device instead.
+      store.mode = 'local';
+      try { saveLocal(); store.status = 'saved'; store.lastOk = Date.now(); } catch (_) { store.status = 'error'; }
+    } else if (store.mode === 'db') {
+      writeCache(localDocs());
+      const wait = RETRY_S[Math.min(store.fails, RETRY_S.length - 1)];
+      store.fails++; store.status = 'retry'; store.retryAt = Date.now() + wait * 1000;
+      clearTimeout(store.timer); store.timer = setTimeout(flushSave, wait * 1000);
+    } else store.status = 'error';
+  }
   store.busy = false;
   paintSaveStatus();
 }
+// Picks up changes made on another device: on focus, and every couple of minutes while open.
+async function pullRemote() {
+  if (store.mode !== 'db' || store.busy || store.status === 'retry' || document.hidden) return;
+  const a = document.activeElement;
+  if (a && a.closest && a.closest('main input, main textarea, main select')) return; // don't re-render under the cursor
+  store.busy = true;
+  try { const plan = await syncNow(); if (plan.lost.length) store.status = 'conflict'; else if (store.status !== 'saving') store.status = 'saved'; store.lastOk = Date.now(); }
+  catch (_) { /* next save retries */ }
+  store.busy = false; paintSaveStatus();
+}
+setInterval(pullRemote, 120000);
+setInterval(() => { if (store.status === 'retry') paintSaveStatus(); }, 1000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) pullRemote(); });
+addEventListener('online', () => { if (store.status === 'retry') { clearTimeout(store.timer); flushSave(); } });
+// Closing the window or reloading inside the save delay must not lose the last edit.
+addEventListener('pagehide', () => {
+  if (!store.loaded || store.status !== 'saving' && store.status !== 'retry') return;
+  try { if (store.mode === 'local') saveLocal(); else if (store.mode === 'db') writeCache(localDocs()); } catch (_) {}
+});
+function retryNow() { clearTimeout(store.timer); store.status = 'saving'; paintSaveStatus(); flushSave(); }
+
+/* ---------- Loading and validating saved data ---------- */
+const clip = (v, n) => String(v ?? '').slice(0, n);
+const num = (v, lo, hi, dflt) => { const n = +v; return isFinite(n) ? Math.max(lo, Math.min(hi, n)) : dflt; };
+function cleanItem(x, cid, n) {
+  if (!x || typeof x !== 'object' || !/^\d{4}-\d{2}-\d{2}$/.test(x.date) || isNaN(fromIso(x.date))) return null;
+  const it = {
+    id: /^[\w.-]{1,60}$/.test(x.id) ? x.id : `${cid}-r${n}`, cid, line: Number.isInteger(x.line) ? x.line : -1,
+    title: clip(x.title, 120) || 'Untitled', notes: clip(x.notes, 300), type: TYPE_KEYS.includes(x.type) ? x.type : 'Other',
+    date: x.date, time: /^\d{2}:\d{2}$/.test(x.time) ? x.time : '23:59',
+    weight: num(x.weight, 0, 100, 0), hours: num(x.hours, 0, 200, 3), conf: Math.round(num(x.conf, 1, 99, 80)),
+    sync: x.sync !== false, ungraded: !!x.ungraded,
+  };
+  if (Number.isInteger(x.cat)) it.cat = x.cat; else if (x.cat === null) it.cat = null;
+  if (x.done) { it.done = true; it.doneAt = /^\d{4}-\d{2}-\d{2}$/.test(x.doneAt) ? x.doneAt : null; }
+  if (x.backfilled) it.backfilled = true;
+  if (x.checked) it.checked = true;
+  if (x.score !== null && x.score !== undefined && x.score !== '' && isFinite(+x.score)) it.score = num(x.score, 0, 150, null);
+  if (x.spent) it.spent = num(x.spent, 0, 500, 0);
+  if (x.locks && typeof x.locks === 'object') { it.locks = {}; for (const [k, h] of Object.entries(x.locks)) if (/^\d{4}-\d{2}-\d{2}$/.test(k) && +h > 0) it.locks[k] = num(h, 0, 16, 0); }
+  return it;
+}
+function cleanCourse(x) {
+  if (!x || typeof x !== 'object' || typeof x.id !== 'string' || !/^[\w-]{1,40}$/.test(x.id) || !Array.isArray(x.items)) return null;
+  const cats = (Array.isArray(x.categories) ? x.categories : []).filter(k => k && k.label && isFinite(+k.pct)).slice(0, 30).map(k => ({
+    label: clip(k.label, 80), pct: num(k.pct, 0, 100, 0), count: Number.isInteger(k.count) ? k.count : null, per: isFinite(+k.per) && k.per !== null ? +k.per : null,
+    type: TYPE_KEYS.includes(k.type) ? k.type : 'Other', ...(Array.isArray(k.words) ? { words: k.words.map(w => clip(w, 30)).slice(0, 12) } : {}), ...(Number.isInteger(k.found) ? { found: k.found } : {}),
+  }));
+  const c = {
+    id: x.id, code: clip(x.code, 18) || 'Course', title: clip(x.title, 80), text: clip(x.text, 400000), categories: cats,
+    items: x.items.slice(0, 400).map((it, n) => cleanItem(it, x.id, n)).filter(Boolean),
+    color: Number.isInteger(x.color) ? ((x.color % 8) + 8) % 8 : 0, parser: x.parser === 'ai' ? 'ai' : 'local', order: num(x.order, 0, 1e15, 0),
+  };
+  if (x.credits !== undefined && x.credits !== null) c.credits = num(x.credits, 0, 12, 3);
+  if (typeof x.target === 'string' && SCALE.some(s => s[1] === x.target)) c.target = x.target;
+  if (typeof x.override === 'string' && SCALE.some(s => s[1] === x.override)) c.override = x.override;
+  if (x.sample || SAMPLES.includes(x.text)) c.sample = true;
+  if (x.source && typeof x.source === 'object') c.source = { name: clip(x.source.name, 120), kind: clip(x.source.kind, 12), added: clip(x.source.added, 10), kept: !!x.source.kept };
+  if (x.review && typeof x.review === 'object') c.review = { pending: !!x.review.pending, at: num(x.review.at, 0, 1e15, 0) };
+  return c;
+}
 function adoptCourses(list) {
-  const courses = list.filter(c => c && c.id && Array.isArray(c.items)).sort((a, b) => (a.order || 0) - (b.order || 0)).slice(0, MAX_COURSES);
-  courses.forEach(c => { c.items.forEach(it => { it.cid = c.id; }); c.categories = c.categories || []; });
+  const courses = list.map(cleanCourse).filter(Boolean).sort((a, b) => (a.order || 0) - (b.order || 0)).slice(0, MAX_COURSES);
   state.courses = courses;
   state.view = 'all'; state.editId = courses[0] ? courses[0].id : null; state.gradeId = state.editId;
-  state.synced = null;
   renderAnnotated(false);
   const c = editCourse();
   $('log').innerHTML = '';
   if (c) { renderSteps(c.parser === 'ai' ? STEPS_AI : STEPS_LOCAL, STEPS_LOCAL.map(() => 'done'), []); logLine(`Loaded ${courses.length} saved course${courses.length === 1 ? '' : 's'}`, 'ok'); summaryLog(c).forEach(([h, k]) => logLine(h, k)); }
   renderAll();
+}
+// Reads saved courses one by one, so a single damaged entry can't take the rest with it.
+function readLocal() {
+  const out = { courses: null, extras: [], bad: 0 };
+  const raw = localStorage.getItem(STORE_KEY);
+  if (raw) {
+    let list = null;
+    try { list = JSON.parse(raw); } catch (_) { out.bad = -1; }
+    if (Array.isArray(list)) {
+      out.courses = [];
+      for (const s of list) { try { const c = cleanCourse(typeof s === 'string' ? JSON.parse(s) : s); if (c) out.courses.push(c); else out.bad++; } catch (_) { out.bad++; } }
+    }
+    if (out.bad) { try { localStorage.setItem('ssync-damaged-' + Date.now(), raw); } catch (_) {} }
+  }
+  try { const ex = JSON.parse(localStorage.getItem(EXTRAS_KEY) || '[]'); if (Array.isArray(ex)) out.extras = ex; } catch (_) { out.extras = []; }
+  return out;
+}
+function docsToState(docs) {
+  const courses = [], ex = [];
+  for (const [id, json] of docs) {
+    if (id.startsWith('course-')) { try { courses.push(JSON.parse(json)); } catch (_) {} }
+    else ex.push([id, json]);
+  }
+  return { courses, ex };
 }
 async function initStore() {
   const api = window.claude && window.claude.use ? window.claude : null;
@@ -997,41 +1250,93 @@ async function initStore() {
     try {
       const [db, user] = await Promise.all([api.use('db'), api.use('user')]);
       const id = user ? await user.id() : null;
-      if (db && id) {
-        const col = db.collection('data/users/' + id);
-        const snap = await col.get();
-        store.mode = 'db'; store.col = col;
-        if (snap.docs.some(d => d.id === 'meta' && d.exists)) {
-          store.saved.set('meta', '1');
-          loaded = [];
-          for (const d of snap.docs) {
-            if (d.exists && (d.id === 'extras' || d.id.startsWith('deck-'))) { try { const json = d.data().json; store.saved.set(d.id, json); loadedExtras.push([d.id, json]); } catch (_) {} continue; }
-            if (!d.exists || !d.id.startsWith('course-')) continue;
-            try { const json = d.data().json; const c = JSON.parse(json); store.saved.set(c.id, json); loaded.push(c); } catch (_) {}
+      store.signedOut = !id;
+      // View-only visitors can't write even their own private folder; they save on this device instead.
+      const canWrite = user && user.can ? await user.can('data.write') : null;
+      if (db && id && canWrite !== false) {
+        store.mode = 'db'; store.uid = id;
+        store.col = db.collection('data/users/' + id);
+        if (!window.desktop) { try { const me = await user.me(); store.who = (me && me.name) || ''; } catch (_) { store.who = ''; } }
+        const cache = readCache();
+        let remote = null;
+        try { remote = await readRemote(); } catch (_) { remote = null; }
+        if (remote && (remote.meta || remote.docs.size)) {
+          if (cache) {
+            // Pick up where this device left off: merge edits it made while offline.
+            store.base = cache.base; store.dirtySince = cache.dirtySince;
+            const st = docsToState(cache.docs);
+            loaded = st.courses; loadedExtras = st.ex;
+            store.pendingMerge = true;
+          } else {
+            for (const [k, v] of remote.docs) store.base.set(k, v.json);
+            const st = docsToState(new Map([...remote.docs].map(([k, v]) => [k, v.json])));
+            loaded = st.courses; loadedExtras = st.ex;
           }
+        } else if (!remote && cache) {
+          store.base = cache.base; store.dirtySince = cache.dirtySince;
+          const st = docsToState(cache.docs);
+          loaded = st.courses; loadedExtras = st.ex;
+          store.status = 'retry'; store.retryAt = Date.now() + 5000;
+        } else if (!remote) {
+          store.status = 'retry'; store.retryAt = Date.now() + 5000; store.unloaded = true;
         }
       }
     } catch (_) { store.mode = 'none'; }
   }
   if (store.mode !== 'db') {
     try {
-      const raw = localStorage.getItem(STORE_KEY);
       store.mode = 'local';
-      if (raw) loaded = JSON.parse(raw).map(s => JSON.parse(s));
-      try { loadedExtras = JSON.parse(localStorage.getItem(EXTRAS_KEY) || '[]'); } catch (_) { loadedExtras = []; }
+      const r = readLocal();
+      if (r.courses) loaded = r.courses;
+      loadedExtras = r.extras;
+      if (r.bad) store.problem = r.bad < 0 ? 'Your saved courses couldn’t be read, so SemesterSync started fresh. A copy of the damaged data was kept. Restore a backup from Your data.' : `${r.bad} saved course${r.bad > 1 ? 's' : ''} couldn’t be read and ${r.bad > 1 ? 'were' : 'was'} skipped. Restore a backup from Your data if you need ${r.bad > 1 ? 'them' : 'it'}.`;
     } catch (_) { store.mode = 'none'; }
   }
-  if (!state.dirty && loadedExtras.length) adoptExtras(loadedExtras);
-  if (loaded && !state.dirty) { adoptCourses(loaded); store.status = 'saved'; }
-  else if (state.dirty) { markDirty(); return; }
-  else store.status = store.mode === 'none' ? 'none' : 'sample';
+  // Only edits the person made before the store answered count; rendering saved data must never look like one.
+  const edited = state.dirty;
+  const fresh = !loaded && !edited;
+  if (!edited && loadedExtras.length) adoptExtras(loadedExtras);
+  if (loaded && !edited) { adoptCourses(loaded); store.status = store.status === 'retry' ? 'retry' : 'saved'; }
+  state.dirty = edited;
+  store.loaded = true;
+  if (edited) markDirty();
+  else if (!loaded && store.status !== 'retry') store.status = store.mode === 'none' ? 'none' : 'sample';
+  renderFeatures();
+  if (store.pendingMerge) { store.pendingMerge = false; clearTimeout(store.timer); store.timer = setTimeout(flushSave, 300); }
+  if (store.status === 'retry') { clearTimeout(store.timer); store.timer = setTimeout(store.unloaded ? retryLoad : flushSave, 5000); }
+  paintSaveStatus();
+  if (store.problem) showProblem(store.problem);
+  if (fresh && store.status !== 'retry') maybeOnboard();
+}
+// Signed in but the account couldn't be reached on a device with no cached copy: keep trying to load.
+async function retryLoad() {
+  try {
+    const remote = await readRemote();
+    store.unloaded = false;
+    for (const [k, v] of remote.docs) store.base.set(k, v.json);
+    if (!state.dirty) {
+      const st = docsToState(new Map([...remote.docs].map(([k, v]) => [k, v.json])));
+      if (st.ex.length) adoptExtras(st.ex);
+      if (st.courses.length) adoptCourses(st.courses);
+      store.status = remote.meta ? 'saved' : 'sample'; store.lastOk = Date.now();
+      writeCache(localDocs());
+    } else {
+      // Edits made while the account was out of reach join the account's courses; untouched samples don't.
+      if ([...remote.docs.keys()].some(k => k.startsWith('course-'))) { state.courses = state.courses.filter(c => !c.sample); renderAll(); }
+      store.base = new Map(); await flushSave();
+    }
+  } catch (_) {
+    const wait = RETRY_S[Math.min(store.fails, RETRY_S.length - 1)];
+    store.fails++; store.retryAt = Date.now() + wait * 1000;
+    store.timer = setTimeout(retryLoad, wait * 1000);
+  }
   paintSaveStatus();
 }
 async function initAi() {
   const api = window.claude && window.claude.use ? window.claude : null;
   try { sampleFn = api ? await api.use('sample') : null; } catch (_) { sampleFn = null; }
   $('useAi').disabled = !sampleFn;
-  $('useAi').title = sampleFn ? 'Extract with Claude using your API key' : 'Claude isn\'t available in this view';
+  $('useAi').title = sampleFn ? (window.desktop ? 'Extract with Claude using your API key' : 'Extract with Claude (asks permission on first use)') : 'Claude isn\'t available in this view';
   if (sampleFn) setParser('ai');
   renderFeatures();
 }
@@ -1042,17 +1347,28 @@ function renderAll() {
   const c = editCourse();
   $('courseTitle').innerHTML = c ? `${tagHtml(c)} <span style="margin-left:4px">${esc(c.title || 'Syllabus')}</span>` : 'No course selected';
   $('removeCourse').hidden = !c;
-  renderCourseBar(); renderFilters(); renderTable(); renderGrading();
+  renderCourseBar(); renderReview(); renderSourceMeta(); renderFilters(); renderTable(); renderGrading();
   const weeks = renderHeat(); renderSummary(weeks); renderSync();
   renderFeatures();
 }
 function renderDerived() {
-  renderCourseBar();
+  renderCourseBar(); renderReview();
   const weeks = renderHeat(); renderSummary(weeks); renderSync(); renderGrading(); renderTableNote();
   renderFeatures();
 }
 let toastT;
-function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2600); }
+function toast(msg, action) {
+  const t = $('toast');
+  t.textContent = msg;
+  if (action) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'toast-act'; b.textContent = action.label;
+    b.onclick = () => { t.classList.remove('show', 'act'); action.fn(); };
+    t.append(b);
+  }
+  t.classList.toggle('act', !!action);
+  t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show', 'act'), action ? 8000 : 2600);
+}
 function setView(v) {
   const ann = v === 'ann', c = editCourse();
   $('viewAnn').setAttribute('aria-pressed', ann); $('viewEdit').setAttribute('aria-pressed', !ann);
@@ -1099,10 +1415,11 @@ $('removeCourse').onclick = () => {
     return;
   }
   removeArmed = null; btn.classList.remove('armed'); btn.textContent = 'Remove course';
+  const before = snapshot(`Before removing ${c.code}`);
   state.courses = state.courses.filter(x => x !== c);
   state.view = 'all'; state.editId = state.courses[0] ? state.courses[0].id : null; state.gradeId = state.editId;
   selectCourse('all'); markDirty();
-  toast(`Removed ${c.code}`);
+  toast(`Removed ${c.code}`, { label: 'Undo', fn: () => restoreSnapshot(before, true) });
 };
 $('viewAnn').onclick = () => {
   const c = editCourse();
@@ -1127,7 +1444,7 @@ $('loadSample').onclick = () => {
     const code = courseCode(text.split('\n')[0]);
     if (have.has(code)) continue;
     const c = addCourse(text); if (!c) break;
-    applyResult(c, parseLocal(text, c.id), 'local'); added++;
+    applyResult(c, parseLocal(text, c.id), 'local'); c.sample = true; added++;
   }
   if (!added) { toast('Sample courses are already here'); return; }
   $('fileNote').hidden = true;
@@ -1210,13 +1527,22 @@ function pdfScheduleRows(items) {
     rows: rows.map(r => ({ y: r.top, h: 12, text: `${r.name} (${r.range}) | ` + r.cells.sort((a, b) => a.left - b.left).map(c => c.text).filter(Boolean).join(' | ') })),
   };
 }
+// Loaded on first use. pdf.js 3.x runs its worker on the page when the worker script is present as pdfjsWorker.
+let pdfLoad = null;
+function loadPdfJs() {
+  const add = src => new Promise((ok, fail) => { const t = document.createElement('script'); t.src = src; t.onload = ok; t.onerror = fail; document.head.appendChild(t); });
+  const base = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+  pdfLoad = pdfLoad || add(base + 'pdf.min.js').then(() => add(base + 'pdf.worker.min.js')).then(() => window.pdfjsLib).catch(() => { pdfLoad = null; return null; });
+  return pdfLoad;
+}
 async function pdfToText(file) {
-  const lib = window.pdfjsLib;
+  const lib = window.pdfjsLib || await loadPdfJs();
   if (!lib) throw { code: 'no_lib' };
   // isEvalSupported:false keeps pdf.js from compiling code out of font data in untrusted PDFs.
   const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()), isEvalSupported: false, disableFontFace: true }).promise;
   const pages = [];
   for (let n = 1; n <= doc.numPages; n++) {
+    if (doc.numPages > 4) fileNote(`Reading ${file.name}: page ${n} of ${doc.numPages}…`);
     const page = await doc.getPage(n);
     const height = page.view[3];
     const { items: raw } = await page.getTextContent();
@@ -1241,11 +1567,12 @@ async function pdfToText(file) {
   return pages.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 function fileNote(msg) { $('fileNote').textContent = msg; $('fileNote').hidden = !msg; }
-function useSyllabusText(text) {
+function useSyllabusText(text, meta) {
   const code = detectCourse(text).code;
   const same = code && state.courses.find(x => x.text.trim() && x.code === code);
   if (same) {
     same.text = `${same.text.replace(/\s+$/, '')}\n\n${text}`;
+    setSource(same, meta);
     state.editId = same.id; state.view = same.id; state.gradeId = same.id;
     $('syllabusInput').value = same.text; fileNote('');
     toast(`Added to ${code}`);
@@ -1256,6 +1583,7 @@ function useSyllabusText(text) {
   if (!c || c.text.trim()) { c = addCourse(''); if (!c) return; }
   state.editId = c.id; state.view = c.id; state.gradeId = c.id;
   c.text = text; $('syllabusInput').value = c.text; fileNote('');
+  setSource(c, meta);
   renderAll(); runParse(true);
 }
 async function readPdf(f) {
@@ -1268,17 +1596,19 @@ async function readPdf(f) {
     else fileNote(`Couldn't read ${f.name}. It may be damaged. Try exporting it again, or paste the text instead.`);
     return;
   }
+  fileNote('');
   if (text.replace(/\s/g, '').length < 40) {
     // A scan has no text layer: with an API key, Claude reads the page images instead.
     const d = window.desktop;
-    if (!(d && await d.claude.available())) { fileNote(`${f.name} looks like a scanned image with no text to read. Add a Claude API key in Settings to read scans, or paste the text with Edit text.`); return; }
+    if (!d) { fileNote(`${f.name} looks like a scanned image with no text to read. Take photos of the pages and use Scan photo, or paste the text with Edit text. (The desktop app can read scanned PDFs with Claude.)`); return; }
+    if (!(await d.claude.available())) { fileNote(`${f.name} looks like a scanned image with no text to read. Add a Claude API key in Settings to read scans, or paste the text with Edit text.`); return; }
     toast('This PDF is a scan. Asking Claude to read it…');
     fileNote(`Reading the scanned pages of ${f.name} with Claude. This can take up to a minute.`);
     const res = await d.claude.transcribePdf(new Uint8Array(await f.arrayBuffer()));
     if (!res.ok) { fileNote(res.message || `Claude couldn't read ${f.name}. Paste the text instead.`); return; }
     text = res.text;
   }
-  useSyllabusText(text);
+  useSyllabusText(text, { name: f.name, kind: 'pdf', files: [f] });
 }
 function loadFile(f) {
   if (/^image\//.test(f.type) || /\.(jpe?g|png|heic|heif|webp|gif)$/i.test(f.name)) { scanPhotos([f]); return; }
@@ -1288,7 +1618,7 @@ function loadFile(f) {
     return;
   }
   const r = new FileReader();
-  r.onload = () => useSyllabusText(String(r.result));
+  r.onload = () => useSyllabusText(String(r.result), { name: f.name, kind: 'text', files: [f] });
   r.onerror = () => fileNote(`Couldn't read ${f.name}. Try pasting its text instead.`);
   r.readAsText(f);
 }
@@ -1337,24 +1667,9 @@ $('addRow').onclick = () => {
 $('gradeCourse').addEventListener('change', e => { state.gradeId = e.target.value; renderGrading(); });
 $('whatifRange').addEventListener('input', renderWhatIf);
 
-$('connectBtn').onclick = async () => {
-  if (state.connected) {
-    state.connected = false; state.synced = null; state.lastSync = null;
-    $('acct').classList.remove('on'); $('acctName').textContent = 'Not connected'; $('acctSub').textContent = 'Connect to push deliverables as events';
-    $('connectBtn').textContent = 'Connect'; $('connectBtn').classList.add('primary'); $('progress').style.width = '0%';
-    renderSync(); return;
-  }
-  $('connectBtn').disabled = true; $('connectBtn').textContent = 'Authorizing…';
-  await wait(900);
-  state.connected = true;
-  $('acct').classList.add('on'); $('acctName').textContent = 'Demo student account'; $('acctSub').textContent = 'Simulated connection · calendar.events scope';
-  $('connectBtn').disabled = false; $('connectBtn').textContent = 'Disconnect'; $('connectBtn').classList.remove('primary');
-  toast('Connected (simulated)');
-  renderSync();
-};
 $('syncBtn').onclick = doSync;
 $('reminders').addEventListener('click', e => { const b = e.target.closest('.chip'); if (!b) return; b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') !== 'true'); renderSync(); });
-['studyBlocks', 'skipPast', 'perCourse'].forEach(id => $(id).addEventListener('change', renderSync));
+['studyBlocks', 'skipPast', 'perCourse', 'calOnlyNew'].forEach(id => $(id).addEventListener('change', renderSync));
 $('calName').addEventListener('input', renderSync);
 $('copyIcs').onclick = () => {
   const txt = $('ics').textContent;
@@ -1382,6 +1697,12 @@ function setTheme(t, save) {
   if (save) { try { localStorage.setItem('ssync-theme', t); } catch (_) {} }
   paintThemeBtn();
 }
+function setThemePref(p) {
+  if (p === 'light' || p === 'dark') { setTheme(p, true); return; }
+  root.removeAttribute('data-theme');
+  try { localStorage.removeItem('ssync-theme'); } catch (_) {}
+  paintThemeBtn();
+}
 try { const saved = localStorage.getItem('ssync-theme'); if (saved === 'light' || saved === 'dark') setTheme(saved, false); } catch (_) {}
 paintThemeBtn();
 $('themeBtn').onclick = () => setTheme(currentTheme() === 'dark' ? 'light' : 'dark', true);
@@ -1389,7 +1710,9 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', paintTheme
 
 /* ---------- Saved extras: planner hours, GPA inputs, review history, study sets ---------- */
 const EXTRAS_KEY = 'ssync-extras-v1';
-const extras = { planner: { hours: [3, 3, 3, 3, 2, 1, 2], block: 1.5 }, gpa: { prior: '', priorCredits: '', goal: '' }, review: { days: {} } };
+const EXTRAS_DEFAULT = () => ({ planner: { hours: [3, 3, 3, 3, 2, 1, 2], block: 1.5, snap: null, missed: null }, gpa: { prior: '', priorCredits: '', goal: '' }, review: { days: {} }, cal: { exported: {}, seq: {}, at: 0 }, lastExport: 0 });
+const extras = EXTRAS_DEFAULT();
+function resetExtras() { const d = EXTRAS_DEFAULT(); for (const k of Object.keys(d)) extras[k] = d[k]; decks = []; }
 let decks = [];
 function extraDocs() {
   return [['extras', JSON.stringify(extras)], ...decks.map(d => ['deck-' + d.id, JSON.stringify(d)])];
@@ -1407,8 +1730,12 @@ function adoptExtras(list) {
         if (v.planner && Array.isArray(v.planner.hours) && v.planner.hours.length === 7) extras.planner.hours = v.planner.hours.map(h => Math.max(0, Math.min(16, +h || 0)));
         if (v.planner && +v.planner.block) extras.planner.block = +v.planner.block;
         if (v.gpa) Object.assign(extras.gpa, v.gpa);
-        if (v.review && v.review.days) extras.review.days = v.review.days;
-      } else if (id.startsWith('deck-') && v && v.id && Array.isArray(v.cards)) decks.push(v);
+        if (v.review && v.review.days && typeof v.review.days === 'object') extras.review.days = v.review.days;
+        if (v.planner && v.planner.snap && typeof v.planner.snap.day === 'string' && v.planner.snap.items && typeof v.planner.snap.items === 'object') extras.planner.snap = v.planner.snap;
+        if (v.planner && v.planner.missed !== undefined) extras.planner.missed = v.planner.missed && isFinite(+v.planner.missed.h) ? v.planner.missed : null;
+        if (v.cal && typeof v.cal === 'object') extras.cal = { exported: v.cal.exported && typeof v.cal.exported === 'object' ? v.cal.exported : {}, seq: v.cal.seq && typeof v.cal.seq === 'object' ? v.cal.seq : {}, at: +v.cal.at || 0 };
+        if (+v.lastExport) extras.lastExport = +v.lastExport;
+      } else if (id.startsWith('deck-')) { const d = cleanDeck(v); if (d) decks.push(d); }
     } catch (_) { /* skip unreadable */ }
   }
   decks.sort((a, b) => (b.created || 0) - (a.created || 0));
@@ -1453,18 +1780,32 @@ function buildPlan(opts = {}) {
     if (!free.has(k)) free.set(k, lost.has(k) ? 0 : Math.max(0, (+caps[(d.getDay() + 6) % 7] || 0) * scale));
     return free.get(k);
   };
+  // Sessions you locked keep their day; everything else is planned around them.
+  const pre = new Map();
+  for (const it of tasks) {
+    if (!it.locks) continue;
+    const placed = new Map(); let left = remaining(it);
+    for (const k of Object.keys(it.locks).sort()) {
+      const d = fromIso(k);
+      if (d < from || d > dueDate(it) || left <= 0.01) continue;
+      const h = Math.floor(Math.min(+it.locks[k], left, capOf(d)) * 4) / 4;
+      if (h < 0.25) continue;
+      free.set(k, capOf(d) - h); placed.set(k, h); left -= h;
+    }
+    pre.set(it, placed);
+  }
   for (const it of tasks) {
     const due = dueDate(it);
     // Evening deadlines leave the due day for work; exams and morning deadlines don't.
     let last = it.type !== 'Exam' && it.time >= '17:00' ? due : addDays(due, -1);
     if (last < from) last = from;
     const t = TYPES.find(x => x.key === it.type) || { lead: 3 };
-    let left = remaining(it);
+    const placed = pre.get(it) || new Map();
+    let left = remaining(it) - [...placed.values()].reduce((a, h) => a + h, 0);
     const perDay = Math.max(block, Math.min(3, left / 3));
     const span = Math.max(t.lead + 2, Math.ceil(left / perDay) + 1);
     let start = addDays(last, -(span - 1));
     if (start < from) start = from;
-    const placed = new Map();
     for (const [s, cap] of [[start, perDay], [from, Infinity]]) {
       for (let d = s; d <= last && left > 0.01; d = addDays(d, 1)) {
         const k = iso(d), already = placed.get(k) || 0;
@@ -1475,15 +1816,56 @@ function buildPlan(opts = {}) {
         left -= h;
       }
     }
-    for (const [k, h] of placed) { const list = days.get(k) || []; list.push({ it, h }); days.set(k, list); }
+    for (const [k, h] of placed) { const list = days.get(k) || []; list.push({ it, h, locked: !!(it.locks && it.locks[k]) }); days.set(k, list); }
     if (left > 0.05) risk.push({ it, short: left });
   }
   return { days, risk, capOf };
 }
+// Returns the label, its colour class and the reasons, biggest first, so the plan can explain itself.
 function priority(it, riskSet) {
-  const daysLeft = (dueDate(it) - TODAY) / DAY;
-  const s = (it.weight || 0) * 2 + remaining(it) * 1.5 - Math.max(0, daysLeft) * 2 + (riskSet.has(it) ? 30 : 0) + (it.type === 'Exam' ? 10 : 0) + (daysLeft < 0 ? 15 : 0);
-  return s >= 25 ? ['High', 'crit'] : s >= 8 ? ['Medium', 'warn'] : ['Low', ''];
+  const daysLeft = Math.round((dueDate(it) - TODAY) / DAY), left = remaining(it);
+  const parts = [
+    [(it.weight || 0) * 2, it.weight ? `worth ${fmtH(it.weight)}% of your grade` : 'not graded'],
+    [left * 1.5, left ? `about ${fmtH(left)} h of work left` : 'fully worked'],
+    [daysLeft < 0 ? 29 : 14 - daysLeft * 2, daysLeft < 0 ? 'past its due date' : daysLeft === 0 ? 'due today' : daysLeft === 1 ? 'due tomorrow' : `due in ${daysLeft} days`],
+    [riskSet.has(it) ? 30 : 0, 'doesn’t fit in your study hours yet'],
+    [it.type === 'Exam' ? 10 : 0, 'an exam'],
+  ];
+  const s = parts.reduce((a, [v]) => a + v, 0) - 14;
+  const why = parts.filter(([v]) => v > 0).sort((a, b) => b[0] - a[0]).map(([, t]) => t);
+  if (!it.weight) why.push('not graded');
+  return [...(s >= 25 ? ['High', 'crit'] : s >= 8 ? ['Medium', 'warn'] : ['Low', '']), [...new Set(why)]];
+}
+// Days in the next three weeks with two or more big deliverables due.
+function clashes() {
+  const by = new Map();
+  for (const i of pendingItems()) {
+    const d = (dueDate(i) - TODAY) / DAY;
+    if (d < 0 || d > 21 || !(i.weight >= 5 || ['Exam', 'Project', 'Paper'].includes(i.type))) continue;
+    const a = by.get(i.date) || []; a.push(i); by.set(i.date, a);
+  }
+  return [...by.entries()].filter(([, a]) => a.length >= 2).sort((a, b) => a[0].localeCompare(b[0])).map(([k, a]) => ({ day: fromIso(k), items: a.sort((x, y) => y.weight - x.weight) }));
+}
+// Compares the plan made for an earlier day with the time logged since, so missed work is named, not hidden.
+function trackMissed(plan) {
+  const P = extras.planner, today = iso(TODAY), before = JSON.stringify([P.snap, P.missed]);
+  // Only once saved data has loaded: a change recorded earlier would count as an unsaved edit and win over it.
+  if (!store.loaded) return P.missed;
+  if (P.snap && P.snap.day < today) {
+    let h = 0; const names = [];
+    for (const [iid, v] of Object.entries(P.snap.items || {})) {
+      const [, it] = findItem(iid); if (!it || it.done || !Array.isArray(v)) continue;
+      const miss = +v[0] - Math.max(0, (+it.spent || 0) - +v[1]);
+      if (miss > 0.2) { h += miss; names.push([iid, Math.round(miss * 4) / 4]); }
+    }
+    P.missed = h > 0.2 ? { h: Math.round(h * 4) / 4, day: P.snap.day, items: names } : null;
+    P.snap = null;
+  }
+  const items = (P.snap && P.snap.items) || {};
+  for (const x of plan.days.get(today) || []) { const v = items[x.it.id]; items[x.it.id] = v ? [Math.max(+v[0], x.h), +v[1]] : [x.h, +x.it.spent || 0]; }
+  P.snap = { day: today, items };
+  if (JSON.stringify([P.snap, P.missed]) !== before) markDirty();
+  return P.missed;
 }
 function logTime(it, h) {
   it.spent = Math.round(((+it.spent || 0) + h) * 4) / 4;
@@ -1499,10 +1881,17 @@ function setDone(it, done) {
 function renderPlan() {
   const plan = buildPlan();
   const riskSet = new Set(plan.risk.map(r => r.it));
-  // At-risk banner
-  $('planRisk').innerHTML = plan.risk.length
-    ? `<div class="banner"><div><b>${plan.risk.length} deadline${plan.risk.length > 1 ? 's don’t' : ' doesn’t'} fit in your study hours</b>Start these now, add hours under <i>Your study hours</i>, or trim the estimate in the Deliverables table.<ul>${plan.risk.slice(0, 5).map(r => `<li>${tagHtml(itemCourse(r.it))} ${esc(r.it.title)}: about ${fmtH(r.short)} h short before ${dueLabel(r.it)}</li>`).join('')}</ul></div></div>`
-    : allItems().length ? `<div class="banner ok"><div><b>Everything fits</b>At your current study hours, every unfinished deliverable has time booked before it's due.</div></div>` : '';
+  const missed = trackMissed(plan), clash = clashes();
+  const short = plan.risk.reduce((a, r) => a + r.short, 0);
+  const banners = [];
+  if (missed) {
+    const names = missed.items.map(([iid]) => findItem(iid)[1]).filter(Boolean).map(i => esc(i.title));
+    banners.push(`<div class="banner warn" id="missedBanner"><div style="flex:1"><b>Re-planned: ${fmtH(missed.h)} h from ${fmtDow(fromIso(missed.day))} ${fmtDay(fromIso(missed.day))} wasn’t logged</b>${names.slice(0, 3).join(', ')}${names.length > 3 ? ` and ${names.length - 3} more` : ''}. That time has been moved into the coming days below. If you did the work, log it so the plan knows.</div><div class="acts"><button type="button" class="btn sm" id="missedLog">I did it, log it</button><button type="button" class="btn sm ghost" id="missedOk">Got it</button></div></div>`);
+  }
+  if (plan.risk.length) banners.push(`<div class="banner"><div><b>${plan.risk.length} deadline${plan.risk.length > 1 ? 's don’t' : ' doesn’t'} fit in your study hours: about ${fmtH(short)} h short</b>Start these now, add hours under <i>Your study hours</i>, or trim the estimate in the Deliverables table.<ul>${plan.risk.slice(0, 5).map(r => `<li>${tagHtml(itemCourse(r.it))} ${esc(r.it.title)}: about ${fmtH(r.short)} h short before ${dueLabel(r.it)}</li>`).join('')}</ul></div></div>`);
+  if (clash.length) banners.push(`<div class="banner warn"><div><b>${clash.length} day${clash.length > 1 ? 's' : ''} with more than one big deadline</b>The plan already starts these early. Check nothing on these days can move, and ask early if an extension is possible.<ul>${clash.slice(0, 4).map(x => `<li><b style="display:inline">${fmtDow(x.day)} ${fmtDay(x.day)}:</b> ${x.items.map(i => `${esc(itemCourse(i).code)} ${esc(i.title)}${i.weight ? ` (${i.weight}%)` : ''}`).join(', ')}</li>`).join('')}</ul></div></div>`);
+  if (!plan.risk.length && allItems().length) banners.push(`<div class="banner ok"><div><b>Everything fits</b>At your current study hours, every unfinished deliverable has time booked before it's due.</div></div>`);
+  $('planRisk').innerHTML = banners.join('');
   // Deadlines
   const items = allItems().filter(i => {
     const d = (dueDate(i) - TODAY) / DAY;
@@ -1518,12 +1907,13 @@ function renderPlan() {
   const open = items.filter(i => !i.done && dueDate(i) >= TODAY).length;
   $('dlCount').textContent = `${open} open in the next 2 weeks`;
   const row = it => {
-    const [pl, pc] = priority(it, riskSet);
-    const left = remaining(it);
+    const [pl, pc, why] = priority(it, riskSet);
+    const left = remaining(it), label = riskSet.has(it) ? 'At risk' : pl;
     return `<div class="dl${it.done ? ' done' : ''}" data-iid="${it.id}">
       <input type="checkbox" data-done ${it.done ? 'checked' : ''} aria-label="Mark ${esc(it.title)} done">
       <div class="t">${esc(it.title)}<small>${tagHtml(itemCourse(it))} · ${dueLabel(it)}${it.weight ? ` · ${it.weight}%` : ''}${!it.done ? ` · ${left ? fmtH(left) + ' h left' : 'fully worked'}` : ''}</small></div>
-      <div class="acts">${it.done ? '' : `<span class="pri ${pc}">${riskSet.has(it) ? 'At risk' : pl}</span><button type="button" class="btn sm" data-log="1" title="Log an hour of work">+1 h</button>`}</div>
+      <div class="acts">${it.done ? '' : `<button type="button" class="pri ${pc}" data-why aria-expanded="false" title="Why ${label.toLowerCase()}?">${label}</button><button type="button" class="btn sm" data-log="1" title="Log an hour of work">+1 h</button>`}</div>
+      ${it.done ? '' : `<div class="why-line" hidden>${esc(label)} because it’s ${esc(why.join(', '))}.</div>`}
     </div>`;
   };
   const html = groups.map(([name, fn]) => {
@@ -1543,7 +1933,7 @@ function renderPlan() {
     cards.push(`<div class="day${n === 0 ? ' today' : ''}">
       <div class="dh"><b>${n === 0 ? 'Today' : n === 1 ? 'Tomorrow' : fmtDow(d) + ' ' + fmtDay(d)}</b><span>${fmtH(used)}/${fmtH(cap)} h</span></div>
       <div class="capbar"><i style="width:${cap ? Math.min(100, used / cap * 100) : 0}%"></i></div>
-      ${list.length ? list.map(x => `<div class="blk" data-iid="${x.it.id}"><span class="bar" style="background:${colorOf(itemCourse(x.it))}"></span><span class="bt" title="${esc(x.it.title)}">${esc(x.it.title)}<small>${esc(itemCourse(x.it).code)} · ${fmtH(x.h)} h · due ${fmtDay(dueDate(x.it))}</small></span>${n === 0 ? `<button type="button" data-log="${x.h}" title="Log this session as done">Did it</button>` : ''}</div>`).join('') : `<span class="free">${cap ? 'Free' : 'Day off'}</span>`}
+      ${list.length ? list.map(x => `<div class="blk${x.locked ? ' locked' : ''}" data-iid="${x.it.id}"><span class="bar" style="background:${colorOf(itemCourse(x.it))}"></span><span class="bt" title="${esc(x.it.title)}">${esc(x.it.title)}<small>${esc(itemCourse(x.it).code)} · ${fmtH(x.h)} h · due ${fmtDay(dueDate(x.it))}${x.locked ? ' · locked' : ''}</small></span><span class="bacts"><button type="button" class="lock" data-lock="${k}|${x.h}" aria-pressed="${x.locked}" title="${x.locked ? 'Unlock: let the planner move this session' : 'Lock this session to this day'}" aria-label="${x.locked ? 'Unlock' : 'Lock'} ${esc(x.it.title)} on ${fmtDay(d)}">${x.locked ? LOCK_ON : LOCK_OFF}</button>${n === 0 ? `<button type="button" data-log="${x.h}" title="Log this session as done">Did it</button>` : ''}</span></div>`).join('') : `<span class="free">${cap ? 'Free' : 'Day off'}</span>`}
     </div>`);
   }
   $('planDays').innerHTML = cards.join('');
@@ -1555,18 +1945,39 @@ function renderPlan() {
   }
   $('blockSize').value = String(extras.planner.block);
 }
+const LOCK_ON = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5 7V5a3 3 0 0 1 6 0v2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>';
+const LOCK_OFF = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5 7V5a3 3 0 0 1 5.8-1"/></svg>';
 function planClick(e) {
   const host = e.target.closest('[data-iid]'); if (!host) return;
   const [, it] = findItem(host.dataset.iid); if (!it) return;
+  const why = e.target.closest('[data-why]');
+  if (why) { const line = host.querySelector('.why-line'); const open = line.hidden; line.hidden = !open; why.setAttribute('aria-expanded', open); return; }
+  const lock = e.target.closest('[data-lock]');
+  if (lock) {
+    const [k, h] = lock.dataset.lock.split('|');
+    it.locks = it.locks || {};
+    if (it.locks[k]) delete it.locks[k]; else it.locks[k] = +h;
+    for (const d of Object.keys(it.locks)) if (d < iso(TODAY)) delete it.locks[d];
+    if (!Object.keys(it.locks).length) delete it.locks;
+    markDirty(); renderPlan();
+    toast(it.locks && it.locks[k] ? `Locked ${it.title} on ${fmtDay(fromIso(k))}` : 'Unlocked. The planner can move it again.');
+    return;
+  }
   if (e.target.matches('[data-done]')) { setDone(it, e.target.checked); return; }
   const log = e.target.closest('[data-log]');
   if (log) logTime(it, +log.dataset.log);
 }
 $('deadlines').addEventListener('click', e => {
-  if (e.target.closest('#catchUp')) { const now = iso(new Date()); allItems().forEach(i => { if (!i.done && dueDate(i) < TODAY) { i.done = true; i.doneAt = now; i.backfilled = true; } }); markDirty(); renderAll(); toast('Marked past deadlines done'); return; }
+  if (e.target.closest('#catchUp')) { const before = snapshot('Before marking past deadlines done'); const now = iso(new Date()); allItems().forEach(i => { if (!i.done && dueDate(i) < TODAY) { i.done = true; i.doneAt = now; i.backfilled = true; } }); markDirty(); renderAll(); toast('Marked past deadlines done', { label: 'Undo', fn: () => restoreSnapshot(before, true) }); return; }
   planClick(e);
 });
 $('planDays').addEventListener('click', planClick);
+$('planRisk').addEventListener('click', e => {
+  const m = extras.planner.missed; if (!m) return;
+  if (e.target.closest('#missedLog')) { for (const [iid, h] of m.items) { const [, it] = findItem(iid); if (it) it.spent = Math.round(((+it.spent || 0) + h) * 4) / 4; } toast(`Logged ${fmtH(m.h)} h`); }
+  else if (!e.target.closest('#missedOk')) return;
+  extras.planner.missed = null; markDirty(); renderPlan();
+});
 $('hoursGrid').addEventListener('change', e => {
   const i = e.target.dataset.dow; if (i == null) return;
   extras.planner.hours[+i] = Math.max(0, Math.min(16, +e.target.value || 0));
@@ -1837,7 +2248,8 @@ function renderEditCards(d) {
   let armed = false;
   $('deckDel').onclick = () => {
     if (!armed) { armed = true; $('deckDel').classList.add('armed'); $('deckDel').textContent = 'Click again to delete'; return; }
-    decks = decks.filter(x => x !== d); deckId = null; review = null; markDirty(); renderStudy(); toast(`Deleted ${d.name}`);
+    const before = snapshot(`Before deleting study set “${d.name}”`, null, { only: ['deck-' + d.id, JSON.stringify(d)] });
+    decks = decks.filter(x => x !== d); deckId = null; review = null; markDirty(); renderStudy(); toast(`Deleted ${d.name}`, { label: 'Undo', fn: () => restoreSnapshot(before, true) });
   };
 }
 $('smBody').addEventListener('click', e => {
@@ -2252,15 +2664,570 @@ async function scanPhotos(files) {
     const text = String((res && res.text) || '').trim();
     if (!text || text === 'NOT_A_DOCUMENT') { fileNote('Claude couldn’t find syllabus text in that photo. Try a sharper, well-lit photo of the page.'); return; }
     fileNote('');
-    useSyllabusText(text);
+    useSyllabusText(text, { name: files.length > 1 ? `${files.length} photos` : files[0].name, kind: 'photo', files: files.slice(0, max) });
   } catch (err) {
     fileNote(err && err.code === 'not_granted' ? 'Claude access was declined.' : err && err.code === 'rate_limited' ? 'Claude is busy. Try again in a minute.' : 'Claude couldn’t read the photo. Try again, or paste the text.');
   }
 }
 $('photoInput').addEventListener('change', e => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) scanPhotos(fs); });
 
+/* ---------- Files: save to disk (desktop) or download (web) ---------- */
+// Resolves 'saved', 'opened', 'canceled', 'unsupported' or 'failed'.
+async function saveFile(name, text, type, opts = {}) {
+  const d = window.desktop;
+  if (d && d.files) {
+    const r = await d.files.save(name, text, !!opts.open).catch(() => ({ ok: false }));
+    return r.ok ? (opts.open ? 'opened' : 'saved') : r.canceled ? 'canceled' : 'failed';
+  }
+  const dl = window.claude && window.claude.use ? await window.claude.use('downloads').catch(() => null) : null;
+  if (dl) {
+    try { await dl.save({ filename: name, data: text }); return 'saved'; }
+    catch (e) {
+      const code = String((e && e.code) || '');
+      if (code === 'declined') return 'canceled';
+      if (!/rejected_extension|extension_not_enabled|unavailable|not_granted|capability/.test(code)) return 'failed';
+    }
+  }
+  if (!window.claude) { // an ordinary web page: a plain download link
+    try { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); return 'saved'; } catch (_) {}
+  }
+  return 'unsupported';
+}
+function pickFile(accept) {
+  return new Promise(resolve => {
+    const inp = document.createElement('input'); inp.type = 'file'; inp.accept = accept; inp.className = 'sr';
+    inp.onchange = () => { resolve(inp.files[0] || null); inp.remove(); };
+    document.body.appendChild(inp); inp.click();
+  });
+}
+const stamp = () => iso(new Date());
+
+/* ---------- Backups, safety copies and restore ---------- */
+const SNAP_KEY = 'ssync-snapshots-v1', DAILY_KEY = 'ssync-daily-v1';
+function backupData() {
+  return {
+    app: 'SemesterSync', format: 1, exported: new Date().toISOString(),
+    courses: state.courses.map(c => JSON.parse(serialize(c))),
+    extras: JSON.parse(JSON.stringify(extras)),
+    decks: decks.map(d => { const { _answers, ...rest } = d; return JSON.parse(JSON.stringify(rest)); }),
+  };
+}
+function readList(key) { try { const v = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(v) ? v : []; } catch (_) { return []; } }
+function writeList(key, list) {
+  while (list.length) { try { localStorage.setItem(key, JSON.stringify(list)); return true; } catch (_) { list = list.slice(0, -1); } }
+  try { localStorage.removeItem(key); } catch (_) {}
+  return false;
+}
+// A copy of everything (or of one document) taken before anything that removes data.
+function snapshot(reason, data, opts = {}) {
+  const entry = { id: uid(), at: Date.now(), reason: clip(reason, 140), data: opts.only ? null : JSON.stringify(data || backupData()), only: opts.only || null };
+  writeList(SNAP_KEY, [entry, ...readList(SNAP_KEY)].slice(0, 10));
+  return entry;
+}
+let lastAuto = 0;
+function autoBackup() {
+  if (Date.now() - lastAuto < 10 * 60000 || !state.courses.some(c => !c.sample)) return;
+  lastAuto = Date.now();
+  const json = JSON.stringify(backupData());
+  if (window.desktop && window.desktop.backup) { window.desktop.backup.auto(json).catch(() => {}); return; }
+  const list = readList(DAILY_KEY).filter(x => x.day !== stamp());
+  writeList(DAILY_KEY, [{ day: stamp(), at: Date.now(), data: json }, ...list].slice(0, 3));
+}
+function cleanDeck(d) {
+  if (!d || typeof d.id !== 'string' || !/^[\w-]{1,40}$/.test(d.id) || !Array.isArray(d.cards)) return null;
+  return {
+    id: d.id, cid: clip(d.cid, 40), iid: d.iid ? clip(d.iid, 60) : null, name: clip(d.name, 120) || 'Study set',
+    cards: d.cards.slice(0, 500).filter(c => c && c.q && c.a).map(c => ({ id: clip(c.id, 20) || uid(), q: clip(c.q, 400), a: clip(c.a, 1200), ...(typeof c.due === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(c.due) ? { due: c.due } : {}), ...(c.reps ? { ease: num(c.ease, 1.3, 4, 2.5), reps: num(c.reps, 0, 1000, 0), interval: num(c.interval, 0, 3650, 0) } : {}), ...(c.lapses ? { lapses: num(c.lapses, 0, 1000, 0) } : {}) })),
+    quiz: (Array.isArray(d.quiz) ? d.quiz : []).slice(0, 50).filter(q => q && q.q && Array.isArray(q.choices) && q.choices.length >= 2).map(q => ({ q: clip(q.q, 500), choices: q.choices.slice(0, 6).map(x => clip(x, 300)), answer: Number.isInteger(q.answer) && q.answer < Math.min(6, q.choices.length) ? q.answer : 0, why: clip(q.why, 600) })),
+    guide: clip(d.guide, 8000), created: num(d.created, 0, 1e15, Date.now()),
+  };
+}
+function cleanBackup(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  const list = Array.isArray(obj) ? obj : obj.courses;
+  if (!Array.isArray(list)) return null;
+  const courses = [];
+  for (const x of list) { try { const c = cleanCourse(typeof x === 'string' ? JSON.parse(x) : x); if (c) courses.push(c); } catch (_) {} }
+  const ex = [];
+  if (obj.extras && typeof obj.extras === 'object') ex.push(['extras', JSON.stringify(obj.extras)]);
+  for (const d of Array.isArray(obj.decks) ? obj.decks.slice(0, 100) : []) { const c = cleanDeck(d); if (c) ex.push(['deck-' + c.id, JSON.stringify(c)]); }
+  return { courses, ex, decks: ex.length - (obj.extras ? 1 : 0), exported: typeof obj.exported === 'string' ? obj.exported : '', bad: list.length - courses.length };
+}
+function restoreData(b, mode, why) {
+  const before = snapshot(why || (mode === 'replace' ? 'Before restoring a backup' : 'Before adding courses from a backup'));
+  if (mode === 'replace') {
+    resetExtras();
+    adoptExtras(b.ex);
+    adoptCourses(b.courses);
+  } else {
+    const have = new Set(state.courses.map(c => c.id)), haveDeck = new Set(decks.map(d => d.id));
+    const add = b.courses.filter(c => !have.has(c.id)).slice(0, Math.max(0, MAX_COURSES - state.courses.length));
+    add.forEach(c => { c.color = nextColor(); state.courses.push(c); });
+    adoptExtras([...extraDocs(), ...b.ex.filter(([id]) => id.startsWith('deck-') && !haveDeck.has(id.slice(5)))]);
+    adoptCourses(state.courses.map(c => JSON.parse(serialize(c))));
+    if (b.courses.length > add.length) toast(`${b.courses.length - add.length} course${b.courses.length - add.length > 1 ? 's were' : ' was'} already here or over the ${MAX_COURSES}-course limit`);
+  }
+  state.dirty = true; markDirty();
+  return before;
+}
+function restoreSnapshot(entry, quiet) {
+  if (entry.only) {
+    snapshot('Before restoring a safety copy');
+    applyDocs(new Map([entry.only]));
+    markDirty();
+  } else {
+    let b = null; try { b = cleanBackup(JSON.parse(entry.data)); } catch (_) {}
+    if (!b) { toast('That safety copy couldn’t be read.'); return; }
+    restoreData(b, 'replace', 'Before restoring a safety copy');
+  }
+  if (!quiet) toast('Restored');
+}
+async function exportBackup() {
+  const res = await saveFile(`SemesterSync-backup-${stamp()}.json`, JSON.stringify(backupData(), null, 1), 'application/json');
+  if (res === 'saved') { toast('Backup saved. Keep it somewhere safe, like a cloud drive.'); extras.lastExport = Date.now(); markDirty(); }
+  else if (res === 'unsupported') toast('Saving files isn’t available in this view.');
+  else if (res === 'failed') toast('Couldn’t save the backup. Try again.');
+  if (dataDlg && dataDlg.open) paintDataStatus();
+}
+const csvCell = v => { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+async function exportCsv() {
+  const rows = [['Course', 'Course title', 'Deliverable', 'Type', 'Due date', 'Due time', 'Weight %', 'Est. hours', 'Hours logged', 'Done', 'Score %', 'Notes']];
+  for (const c of state.courses) for (const i of c.items.slice().sort((a, b) => a.date.localeCompare(b.date))) rows.push([c.code, c.title, i.title, i.type, i.date, i.time, i.weight, i.hours, i.spent || 0, i.done ? 'yes' : 'no', hasScore(i) ? +i.score : '', i.notes]);
+  const res = await saveFile(`SemesterSync-deliverables-${stamp()}.csv`, '﻿' + rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n', 'text/csv');
+  if (res === 'saved') toast('Saved the deliverables spreadsheet');
+  else if (res === 'unsupported') toast('Saving files isn’t available in this view.');
+  else if (res === 'failed') toast('Couldn’t save the spreadsheet.');
+}
+async function importBackup(fileOrText) {
+  let text = fileOrText;
+  if (fileOrText && typeof fileOrText !== 'string') {
+    if (fileOrText.size > 50 * 1024 * 1024) { toast('That file is too big to be a SemesterSync backup.'); return; }
+    text = await fileOrText.text();
+  }
+  if (!text) return;
+  let b = null; try { b = cleanBackup(JSON.parse(text)); } catch (_) {}
+  if (!b || (!b.courses.length && !b.ex.length)) { toast('That isn’t a SemesterSync backup file.'); return; }
+  openImport(b);
+}
+
+/* ---------- Dialogs ---------- */
+function makeDialog(cls) { const d = document.createElement('dialog'); d.className = 'settings ' + cls; document.body.appendChild(d); return d; }
+const importDlg = makeDialog('import-dlg');
+function openImport(b) {
+  const when = b.exported ? new Date(b.exported) : null;
+  const words = [`${b.courses.length} course${b.courses.length === 1 ? '' : 's'}`, b.decks ? `${b.decks} study set${b.decks === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ');
+  importDlg.innerHTML = `<form method="dialog"><h2>Restore this backup?</h2>
+    <div class="acct-card"><div><b>${esc(words)}</b><span>${when && !isNaN(when) ? `Exported ${esc(when.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }))}` : 'Backup file'}${b.courses.length ? ` · ${esc(b.courses.map(c => c.code).join(', ')).slice(0, 200)}` : ''}</span></div></div>
+    ${b.bad ? `<p class="msg bad">${b.bad} course${b.bad > 1 ? 's' : ''} in the file couldn’t be read and will be skipped.</p>` : ''}
+    <p class="hint"><b>Replace</b> swaps everything you have now for the backup. <b>Add</b> keeps what you have and brings in courses and study sets you don’t have yet. Either way, a safety copy of your current data is saved first.</p>
+    <div class="actions"><button type="button" class="btn" value="cancel" id="impCancel">Cancel</button><span style="flex:1"></span><button type="button" class="btn" id="impAdd"${b.courses.length || b.decks ? '' : ' disabled'}>Add to mine</button><button type="button" class="btn primary danger-fill" id="impReplace">Replace mine</button></div></form>`;
+  importDlg.querySelector('#impCancel').onclick = () => importDlg.close();
+  const go = mode => { importDlg.close(); if (dataDlg.open) dataDlg.close(); const before = restoreData(b, mode); toast(mode === 'replace' ? 'Restored your backup' : 'Added from your backup', { label: 'Undo', fn: () => restoreSnapshot(before) }); };
+  importDlg.querySelector('#impAdd').onclick = () => go('merge');
+  importDlg.querySelector('#impReplace').onclick = () => go('replace');
+  importDlg.showModal();
+  importDlg.querySelector('#impCancel').focus();
+}
+
+const dataDlg = makeDialog('wide data-dlg');
+function paintDataStatus() {
+  const el = dataDlg.querySelector('#dataStatus'); if (!el) return;
+  const where = store.mode === 'db' ? `Synced to ${esc(acctName())}, with a copy ${HERE} for working offline.` : store.mode === 'local' ? `Saved ${HERE} only.${window.desktop ? ' Sign in to keep it on every computer you use.' : ''}` : 'Not being saved: this view has no storage.';
+  const last = store.lastOk ? `Last saved ${fmtDay(new Date(store.lastOk))}, ${clockTime(store.lastOk)}.` : '';
+  const exp = extras.lastExport ? `Last backup file ${fmtDay(new Date(extras.lastExport))}.` : 'You haven’t exported a backup file yet.';
+  el.innerHTML = `<div class="ds ${$('saveStatus') ? $('saveStatus').className.replace('save-status', '') : ''}"><b>${esc($('saveStatus') ? $('saveStatus').textContent : '')}</b><span>${where} ${last}</span><span>${exp}</span></div>`;
+  const sync = dataDlg.querySelector('#dataSync'); if (sync) sync.hidden = store.mode !== 'db';
+}
+function renderSnapList() {
+  const snaps = readList(SNAP_KEY), daily = window.desktop ? [] : readList(DAILY_KEY);
+  const rows = [
+    ...snaps.map(s => ({ id: s.id, kind: 'snap', at: s.at, label: s.reason })),
+    ...daily.map(s => ({ id: s.day, kind: 'daily', at: s.at, label: 'Daily copy' })),
+  ].sort((a, b) => b.at - a.at);
+  dataDlg.querySelector('#snapList').innerHTML = rows.length ? rows.map(r => `<li><span><b>${esc(r.label)}</b><small>${esc(new Date(r.at).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }))}</small></span><button type="button" class="btn sm" data-restore="${r.kind}:${esc(r.id)}">Restore</button></li>`).join('') : '<li class="hint">None yet. They appear here automatically.</li>';
+  dataDlg.querySelector('#snapClear').hidden = !rows.length;
+}
+async function renderDiskBackups() {
+  const box = dataDlg.querySelector('#diskBackups'); if (!box || !window.desktop || !window.desktop.backup) return;
+  const r = await window.desktop.backup.list().catch(() => ({ ok: false }));
+  const files = r.ok ? r.files.slice(0, 7) : [];
+  box.innerHTML = `<p class="hint">SemesterSync also saves a backup to its Backups folder each day you use it, and keeps the last 30.</p>
+    ${files.length ? `<ul class="snaps">${files.map(f => `<li><span><b>${esc(f.name.replace(/^SemesterSync-|\.json$/g, ''))}</b><small>${esc(new Date(f.mtime).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }))}</small></span><button type="button" class="btn sm" data-disk="${esc(f.name)}">Restore</button></li>`).join('')}</ul>` : ''}
+    <div class="row"><button type="button" class="btn sm ghost" id="openBackups">Open Backups folder</button></div>`;
+  box.querySelector('#openBackups').onclick = () => window.desktop.backup.openFolder();
+}
+function openData() {
+  const theme = (() => { try { return localStorage.getItem('ssync-theme') || 'system'; } catch (_) { return 'system'; } })();
+  dataDlg.innerHTML = `<form method="dialog"><h2>Your data</h2>
+    <section class="data-sec" id="dataStatus"></section>
+    <div class="row"><button type="button" class="btn sm" id="dataSync">Sync now</button>${store.status === 'retry' ? '<button type="button" class="btn sm" id="dataRetry">Retry now</button>' : ''}</div>
+    <section class="data-sec"><h3>Backup file</h3>
+      <p class="hint">Everything in one file: courses, scores, study sets and settings. Keep a copy somewhere safe, like a cloud drive, and a new computer or a reinstall never costs you a semester.</p>
+      <div class="row"><button type="button" class="btn primary" id="dataExport">Export backup</button><button type="button" class="btn" id="dataImport">Restore from a file…</button><button type="button" class="btn ghost" id="dataCsv">Deliverables as a spreadsheet (.csv)</button></div>
+      <div id="diskBackups"></div>
+    </section>
+    <section class="data-sec"><h3>Safety copies</h3>
+      <p class="hint">Saved ${HERE} automatically before anything that removes data, and when the same thing was changed on two devices.</p>
+      <ul class="snaps" id="snapList"></ul>
+      <div class="row"><button type="button" class="btn sm ghost" id="snapClear">Clear safety copies</button></div>
+    </section>
+    <section class="data-sec"><h3>Preferences</h3>
+      <div class="toggle-row"><div>Theme<small>System follows your ${window.desktop ? 'computer' : 'device'}’s light or dark setting</small></div><div class="seg" role="group" aria-label="Theme" id="themePref">${[['system', 'System'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button type="button" data-theme-pref="${k}" aria-pressed="${theme === k}">${l}</button>`).join('')}</div></div>
+      ${window.desktop ? '<div class="toggle-row"><div>Notifications<small>Deadline reminders, timing and your Claude API key are in Settings</small></div><button type="button" class="btn sm" id="dataSettings">Open Settings</button></div>' : ''}
+    </section>
+    <section class="data-sec"><h3>Start over</h3>
+      <p class="hint">Deletes every course, study set and setting${store.mode === 'db' ? ' in your account and on this device' : ` ${HERE}`}. A safety copy stays ${HERE} until you clear safety copies.</p>
+      <div class="row"><button type="button" class="btn sm ghost danger" id="dataWipe">Delete everything</button></div>
+    </section>
+    <div class="actions"><button type="button" class="btn ghost" id="dataTour">Show the welcome guide</button><button type="button" class="btn ghost" id="dataKeys">Keyboard shortcuts</button><span style="flex:1"></span><button class="btn primary" value="close">Done</button></div></form>`;
+  paintDataStatus(); renderSnapList(); renderDiskBackups();
+  const q = s => dataDlg.querySelector(s);
+  q('#dataSync').onclick = async () => { q('#dataSync').disabled = true; await flushSave(); q('#dataSync').disabled = false; paintDataStatus(); };
+  if (q('#dataRetry')) q('#dataRetry').onclick = () => { retryNow(); q('#dataRetry').remove(); };
+  q('#dataExport').onclick = exportBackup;
+  q('#dataCsv').onclick = exportCsv;
+  q('#dataImport').onclick = async () => { const f = await pickFile('.json,application/json'); if (f) importBackup(f); };
+  q('#snapClear').onclick = () => { try { localStorage.removeItem(SNAP_KEY); localStorage.removeItem(DAILY_KEY); } catch (_) {} renderSnapList(); toast('Cleared safety copies'); };
+  q('#themePref').onclick = e => { const b = e.target.closest('[data-theme-pref]'); if (!b) return; setThemePref(b.dataset.themePref); q('#themePref').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b)); };
+  if (q('#dataSettings')) q('#dataSettings').onclick = () => { dataDlg.close(); document.dispatchEvent(new CustomEvent('ssync:open', { detail: 'settings' })); };
+  q('#dataTour').onclick = () => { dataDlg.close(); openOnboarding(); };
+  q('#dataKeys').onclick = () => { dataDlg.close(); openKeys(); };
+  let armed = false;
+  q('#dataWipe').onclick = () => {
+    const b = q('#dataWipe');
+    if (!armed) { armed = true; b.classList.add('armed'); b.textContent = 'Click again to delete everything'; setTimeout(() => { armed = false; if (b.isConnected) { b.classList.remove('armed'); b.textContent = 'Delete everything'; } }, 4000); return; }
+    const before = snapshot('Before deleting everything');
+    state.courses = []; resetExtras(); decks = []; deckId = null; review = null;
+    state.view = 'all'; state.editId = null; state.gradeId = null;
+    if (window.desktop && window.desktop.sources) window.desktop.sources.clear().catch(() => {});
+    dataDlg.close(); state.dirty = true; markDirty(); renderAnnotated(false); renderAll();
+    toast('Deleted everything', { label: 'Undo', fn: () => restoreSnapshot(before) });
+  };
+  dataDlg.querySelector('form').addEventListener('click', e => {
+    const r = e.target.closest('[data-restore]');
+    if (r) {
+      const [kind, id] = r.dataset.restore.split(/:(.*)/s);
+      const entry = kind === 'snap' ? readList(SNAP_KEY).find(s => s.id === id) : (() => { const d = readList(DAILY_KEY).find(s => s.day === id); return d ? { data: d.data } : null; })();
+      if (!entry) return;
+      dataDlg.close();
+      if (entry.only) { restoreSnapshot(entry); return; }
+      let b = null; try { b = cleanBackup(JSON.parse(entry.data)); } catch (_) {}
+      if (b) openImport(b); else toast('That safety copy couldn’t be read.');
+      return;
+    }
+    const k = e.target.closest('[data-disk]');
+    if (k) window.desktop.backup.read(k.dataset.disk).then(res => { if (res.ok) { dataDlg.close(); importBackup(res.text); } else toast('Couldn’t read that backup.'); });
+  });
+  dataDlg.showModal();
+}
+function showProblem(msg) {
+  const el = document.createElement('div');
+  el.className = 'banner problem'; el.setAttribute('role', 'alert');
+  el.innerHTML = `<div style="flex:1"><b>Some saved data couldn’t be loaded</b>${esc(msg)}</div><button type="button" class="btn sm">Open Your data</button><button type="button" class="icon-btn" aria-label="Dismiss"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>`;
+  el.querySelector('.btn').onclick = openData;
+  el.querySelector('.icon-btn').onclick = () => el.remove();
+  document.querySelector('main').prepend(el);
+}
+
+/* ---------- Checking what the parser found ---------- */
+const reviewCtx = new WeakMap();
+function ctxOf(c) {
+  let x = reviewCtx.get(c);
+  if (x && x.text === c.text && x.n === c.items.length && x.sig === c.items.map(i => i.date + i.title).join('|')) return x;
+  const ds = c.items.map(i => +dueDate(i)).sort((a, b) => a - b);
+  const counts = new Map(); c.items.forEach(i => { const k = i.title.toLowerCase() + '|' + i.date; counts.set(k, (counts.get(k) || 0) + 1); });
+  x = { text: c.text, n: c.items.length, sig: c.items.map(i => i.date + i.title).join('|'), lines: c.text.split('\n'), median: ds.length ? ds[Math.floor(ds.length / 2)] : 0, counts };
+  reviewCtx.set(c, x);
+  return x;
+}
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function reviewFlags(c, it) {
+  if (!c || it.checked) return [];
+  const x = ctxOf(c), f = [];
+  if (it.conf < 80) f.push(['Low confidence', 'The parser had to guess at this one.']);
+  const line = it.line >= 0 ? x.lines[it.line] || '' : '';
+  if (line && !new RegExp(MONTH_SRC, 'i').test(line)) {
+    const m = line.match(new RegExp(NUM_SRC));
+    if (m && +m[1] <= 12 && +m[2] <= 12 && m[1] !== m[2] && +it.date.slice(5, 7) === +m[1]) f.push(['Ambiguous date', `Written as ${m[0]}: read as ${MONTHS_SHORT[+m[1] - 1]} ${+m[2]}. Could it be ${MONTHS_SHORT[+m[2] - 1]} ${+m[1]}?`]);
+  }
+  if (x.median && Math.abs(+dueDate(it) - x.median) > 120 * DAY) f.push(['Check the year', 'Months away from the course’s other dates.']);
+  if ((x.counts.get(it.title.toLowerCase() + '|' + it.date) || 0) > 1) f.push(['Listed twice', 'Same name and date as another item.']);
+  if (c.categories.length && !it.ungraded && !it.weight && !['Reading', 'Other'].includes(it.type)) f.push(['No grade weight', 'Didn’t match a grading category.']);
+  return f;
+}
+function reviewIssues(c) {
+  if (!c) return { count: 0, notes: [], flagged: [] };
+  const notes = [];
+  if (c.items.length && !/\b20\d\d\b/.test(c.text)) notes.push(`The syllabus never states a year, so every date assumes ${dueDate(c.items[0]).getFullYear()}.`);
+  const total = c.categories.reduce((a, k) => a + k.pct, 0);
+  if (c.categories.length && Math.abs(total - 100) > 0.5) notes.push(`Grade weights add up to ${fmtH(total)}%, not 100%. A category may be missing or misread.`);
+  for (const k of c.categories) if (k.count && k.found != null && k.found !== k.count) notes.push(`The syllabus lists ${k.count} × ${k.label}, but ${k.found} ${k.found === 1 ? 'was' : 'were'} found with dates.`);
+  if (c.items.length && !c.categories.length) notes.push('No grading table was found, so items have no grade weights. Add the page with the grading table, or type weights in.');
+  if (!c.items.length && c.text.trim()) notes.push('No dated deliverables were found. Check the text is the syllabus, or try Claude.');
+  const flagged = c.items.filter(i => reviewFlags(c, i).length);
+  return { count: flagged.length + (c.review && c.review.pending ? notes.length : 0), notes, flagged };
+}
+let reviewAll = false;
+function renderReview() {
+  const c = editCourse(), el = $('review');
+  if (!c || !c.review || !c.review.pending) {
+    const n = c ? reviewIssues(c).flagged.length : 0;
+    el.hidden = !n;
+    if (n) el.innerHTML = `<div class="review-slim"><span class="badge warn">${n} to check</span><span>Some items in ${esc(c.code)} could use a look.</span><span style="flex:1"></span><button type="button" class="btn sm" id="reviewOpen">Review</button></div>`;
+    return;
+  }
+  el.hidden = false;
+  const iss = reviewIssues(c);
+  const list = (reviewAll ? c.items : iss.flagged).slice().sort((a, b) => a.date.localeCompare(b.date));
+  el.innerHTML = `<div class="panel-head"><div style="min-width:0"><div class="eyebrow">Check before you rely on it</div><h2>What we found in ${esc(c.code)}</h2></div><div class="spacer"></div>
+      <span class="sub">${c.items.length} deliverable${c.items.length === 1 ? '' : 's'}${iss.flagged.length ? ` · <b style="color:var(--warn)">${iss.flagged.length} flagged</b>` : ''}</span>
+      <button type="button" class="btn sm ghost" id="reviewToggle">${reviewAll ? 'Show flagged only' : 'Show all'}</button>
+      <button type="button" class="btn sm primary" id="reviewDone">${iss.flagged.length ? 'Confirm all' : 'Looks right'}</button></div>
+    ${iss.notes.length ? `<ul class="review-notes">${iss.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
+    <div class="review-list">${list.length ? list.map(it => {
+      const fl = reviewFlags(c, it);
+      return `<div class="rv" data-iid="${it.id}">
+        <input class="cell-in date" type="date" value="${it.date}" data-rk="date" aria-label="Due date">
+        <input class="cell-in" type="time" value="${it.time}" data-rk="time" aria-label="Due time">
+        <input class="cell-in title" type="text" value="${esc(it.title)}" data-rk="title" aria-label="Title">
+        <select class="cell-in" data-rk="type" aria-label="Type">${TYPE_KEYS.map(t => `<option${t === it.type ? ' selected' : ''}>${t}</option>`).join('')}</select>
+        <label class="rv-w"><input class="cell-in n" type="number" min="0" max="100" step="0.5" value="${it.weight}" data-rk="weight" aria-label="Weight percent">%</label>
+        <div class="rv-acts">${it.line >= 0 ? `<button type="button" class="btn sm ghost" data-src="${it.line}" title="Show this line in the syllabus">Line ${it.line + 1}</button>` : ''}<button type="button" class="btn sm" data-ok>${fl.length ? 'It’s right' : '✓'}</button><button type="button" class="icon-btn" data-rdel aria-label="Remove ${esc(it.title)}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></div>
+        ${fl.length ? `<div class="rv-why">${fl.map(([t, d]) => `<span class="pri warn" title="${esc(d)}">${esc(t)}</span><small>${esc(d)}</small>`).join('')}</div>` : ''}
+      </div>`;
+    }).join('') : `<p class="note" style="padding:4px 18px 14px">Nothing looks off. Give the dates a quick glance against your syllabus, then confirm.</p>`}</div>`;
+}
+function confirmReview(c) {
+  c.review = { pending: false, at: Date.now() };
+  c.items.forEach(i => { i.checked = true; });
+  markDirty(); renderAll();
+  toast(`${c.code} checked`);
+}
+$('review').addEventListener('click', e => {
+  const c = editCourse(); if (!c) return;
+  if (e.target.closest('#reviewOpen')) { c.review = { pending: true, at: Date.now() }; renderReview(); return; }
+  if (e.target.closest('#reviewToggle')) { reviewAll = !reviewAll; renderReview(); return; }
+  if (e.target.closest('#reviewDone')) { confirmReview(c); return; }
+  const row = e.target.closest('[data-iid]'); if (!row) return;
+  const it = c.items.find(i => i.id === row.dataset.iid); if (!it) return;
+  const src = e.target.closest('[data-src]');
+  if (src) {
+    setView('ann');
+    const ln = document.querySelectorAll('#annotated .ln')[+src.dataset.src];
+    if (ln) { ln.scrollIntoView({ block: 'center' }); ln.classList.remove('flash'); void ln.offsetWidth; ln.classList.add('flash'); }
+    $('source').scrollIntoView({ block: 'start', behavior: reduce ? 'auto' : 'smooth' });
+    return;
+  }
+  if (e.target.closest('[data-ok]')) { it.checked = true; it.conf = Math.max(it.conf, 99); markDirty(); renderAll(); return; }
+  if (e.target.closest('[data-rdel]')) { c.items = c.items.filter(i => i !== it); markDirty(); renderAll(); toast(`Removed “${it.title}”`); }
+});
+$('review').addEventListener('change', e => {
+  const k = e.target.dataset.rk; if (!k) return;
+  const c = editCourse(), row = e.target.closest('[data-iid]'), it = c && c.items.find(i => i.id === row.dataset.iid); if (!it) return;
+  const v = e.target.value;
+  if (k === 'date') { if (!v) { e.target.value = it.date; return; } it.date = v; }
+  else if (k === 'time') { if (/^\d{2}:\d{2}$/.test(v)) it.time = v; }
+  else if (k === 'weight') it.weight = Math.max(0, Math.min(100, +v || 0));
+  else if (k === 'title') it.title = v.trim() || it.title;
+  else it[k] = v;
+  it.conf = 99; it.checked = true;
+  markDirty(); renderAll();
+});
+
+/* ---------- The original document ---------- */
+function setSource(c, meta) {
+  if (!c || !meta) return;
+  c.source = { name: clip(meta.name, 120), kind: meta.kind, added: stamp(), kept: false };
+  const d = window.desktop;
+  const files = (meta.files || []).filter(f => f && f.size && f.size <= 25 * 1024 * 1024);
+  if (d && d.sources && files.length) {
+    Promise.all(files.map(async f => d.sources.keep(c.id, f.name, new Uint8Array(await f.arrayBuffer())))).then(rs => {
+      if (rs.some(r => r && r.ok)) { c.source.kept = true; markDirty(); renderSourceMeta(); }
+    }).catch(() => {});
+  }
+}
+function renderSourceMeta() {
+  const c = editCourse(), el = $('srcMeta');
+  if (!c || !c.source) { el.hidden = true; return; }
+  el.hidden = false;
+  const s = c.source;
+  el.innerHTML = `<span>From <b>${esc(s.name)}</b>${s.added ? ` · added ${esc(fmtDay(fromIso(s.added)))}` : ''}. The text is kept with the course${s.kept ? ' and the original file is saved on this computer' : ''}.</span>${s.kept && window.desktop ? '<button type="button" class="btn sm ghost" id="openSource">Open original</button>' : ''}`;
+  const b = el.querySelector('#openSource');
+  if (b) b.onclick = async () => { const r = await window.desktop.sources.open(c.id); if (!r.ok) toast('The original file isn’t on this computer.'); };
+}
+
+/* ---------- First launch ---------- */
+const ONBOARD_KEY = 'ssync-onboarded';
+const onboardDlg = makeDialog('wide onboard');
+let ob = { step: 0, choice: 'sample' };
+function maybeOnboard() {
+  try { if (localStorage.getItem(ONBOARD_KEY)) return; } catch (_) { return; }
+  if (store.mode === 'none') return;
+  setTimeout(openOnboarding, 350);
+}
+function openOnboarding() { ob = { step: 0, choice: 'sample' }; paintOnboard(); if (!onboardDlg.open) onboardDlg.showModal(); }
+function finishOnboarding() {
+  try { localStorage.setItem(ONBOARD_KEY, '1'); } catch (_) {}
+  onboardDlg.close();
+  if (ob.choice === 'mine') {
+    if (state.courses.some(c => c.sample)) { state.courses = state.courses.filter(c => !c.sample); state.view = 'all'; state.editId = null; renderAnnotated(false); renderAll(); markDirty(); }
+    setTab('semester');
+    let c = editCourse(); if (!c) { c = addCourse(''); state.view = c.id; state.editId = c.id; state.gradeId = c.id; renderAll(); }
+    setView('edit');
+    $('syllabusInput').placeholder = 'Paste your syllabus here, or use Upload PDF or Scan photo below.';
+    $('source').scrollIntoView({ block: 'start' });
+  } else if (ob.choice === 'restore') pickFile('.json,application/json').then(f => f && importBackup(f));
+}
+function paintOnboard() {
+  const desk = !!window.desktop, ai = !!sampleFn;
+  const dots = `<div class="ob-dots" aria-hidden="true">${[0, 1, 2, 3].map(i => `<i class="${i === ob.step ? 'on' : ''}"></i>`).join('')}</div>`;
+  const nav = (next, label) => `<div class="actions">${ob.step ? '<button type="button" class="btn ghost" data-ob="back">Back</button>' : '<button type="button" class="btn ghost" data-ob="skip">Skip the tour</button>'}<span style="flex:1"></span>${dots}<span style="flex:1"></span><button type="button" class="btn primary" data-ob="${next}">${label}</button></div>`;
+  const steps = [
+    () => `<h2>Welcome to SemesterSync</h2>
+      <p class="hint" style="font-size:14px">Add each course’s syllabus. SemesterSync pulls out every deadline and grade weight, plans your study time, and shows which weeks will be hardest before they arrive.</p>
+      <div class="ob-choices" role="radiogroup" aria-label="How do you want to start?">
+        ${[['mine', 'Add my first syllabus', 'Upload a PDF, scan a photo or paste the text.'], ['sample', 'Explore a sample semester', 'Three made-up courses to click around in. Clear them any time.'], ['restore', 'Restore a backup', 'Bring your semester over from another computer.']].map(([k, t, d]) => `<button type="button" role="radio" class="ob-choice" data-choice="${k}" aria-checked="${ob.choice === k}"><b>${t}</b><span>${d}</span></button>`).join('')}
+      </div>${nav('next', 'Continue')}`,
+    () => `<h2>What works offline, and what uses Claude</h2>
+      <div class="ob-cols">
+        <div><h3>Works on its own</h3><ul><li>Reading PDF and text syllabi</li><li>Deadlines, plan and stress test</li><li>Grades, GPA and what-ifs</li><li>Flashcards you write</li><li>Calendar export and backups</li></ul></div>
+        <div><h3>Uses Claude</h3><ul><li>Reading messy syllabi more accurately</li><li>Scanned PDFs and photos</li><li>The semester coach</li><li>Generated flashcards, quizzes and guides</li></ul></div>
+      </div>
+      <p class="hint">${desk ? (ai ? 'Your Claude API key is set up, so everything is on.' : 'Claude features need a Claude API key from the Claude Console. Usage is billed to that account. You can add one now or later in Settings.') : (ai ? 'Claude features use your Claude account. You’ll be asked once before the first one runs.' : 'Claude features aren’t available in this view. Everything else works.')}</p>
+      ${desk && !ai ? '<div class="row"><button type="button" class="btn" data-ob="key">Add a Claude API key</button></div>' : ''}
+      ${nav('next', 'Continue')}`,
+    () => `<h2>Where your semester is saved</h2>
+      ${desk ? `<p class="hint" style="font-size:14px">Everything saves on this computer as you go, with a daily backup. Sign in to keep it on every computer you use, too. Accounts are optional and free.</p>
+        <div class="row"><button type="button" class="btn" data-ob="account">Sign in or create an account</button></div>
+        <p class="hint">Already have courses in an account? Signing in asks what to do with the ones on this computer, so nothing is overwritten.</p>`
+        : `<p class="hint" style="font-size:14px">${store.mode === 'db' ? 'Your semester saves to your Claude account as you go, so it’s there wherever you open SemesterSync.' : 'Your semester saves in this browser as you go. Export a backup file from <b>Your data</b> to move it or keep it safe.'}</p>`}
+      <p class="hint">Your data is private to you. <b>Your data</b> (top right) has backups, restore and a safety copy before anything is deleted.</p>
+      ${nav('next', 'Continue')}`,
+    () => `<h2>How much can you study?</h2>
+      <p class="hint" style="font-size:14px">The planner never books more than this. You can set each day separately later on the Plan tab.</p>
+      <div class="ob-hours"><label>Weekdays<input class="inline-in" type="number" min="0" max="16" step="0.5" id="obWeek" value="${extras.planner.hours[0]}"> h a day</label><label>Weekends<input class="inline-in" type="number" min="0" max="16" step="0.5" id="obEnd" value="${extras.planner.hours[5]}"> h a day</label></div>
+      ${nav('done', ob.choice === 'mine' ? 'Add my syllabus' : ob.choice === 'restore' ? 'Choose backup file' : 'Start exploring')}`,
+  ];
+  onboardDlg.innerHTML = `<form method="dialog">${steps[ob.step]()}</form>`;
+  const first = onboardDlg.querySelector('[aria-checked="true"], .btn.primary'); if (first) first.focus();
+}
+onboardDlg.addEventListener('click', e => {
+  const ch = e.target.closest('[data-choice]');
+  if (ch) { ob.choice = ch.dataset.choice; onboardDlg.querySelectorAll('[data-choice]').forEach(b => b.setAttribute('aria-checked', b === ch)); return; }
+  const b = e.target.closest('[data-ob]'); if (!b) return;
+  const act = b.dataset.ob;
+  if (act === 'next') { ob.step++; paintOnboard(); }
+  else if (act === 'back') { ob.step--; paintOnboard(); }
+  else if (act === 'skip') { ob.choice = 'sample'; finishOnboarding(); }
+  else if (act === 'key') { try { localStorage.setItem(ONBOARD_KEY, '1'); } catch (_) {} onboardDlg.close(); document.dispatchEvent(new CustomEvent('ssync:open', { detail: 'settings' })); }
+  else if (act === 'account') { try { localStorage.setItem(ONBOARD_KEY, '1'); } catch (_) {} onboardDlg.close(); document.dispatchEvent(new CustomEvent('ssync:open', { detail: 'account' })); }
+  else if (act === 'done') {
+    const wk = Math.max(0, Math.min(16, +$('obWeek').value || 0)), we = Math.max(0, Math.min(16, +$('obEnd').value || 0));
+    extras.planner.hours = [wk, wk, wk, wk, wk, we, we]; markDirty();
+    finishOnboarding();
+  }
+});
+onboardDlg.addEventListener('keydown', e => {
+  if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(e.key) || !e.target.closest('[data-choice]')) return;
+  const all = [...onboardDlg.querySelectorAll('[data-choice]')], i = all.indexOf(e.target.closest('[data-choice]'));
+  const n = all[(i + (e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : all.length - 1)) % all.length];
+  e.preventDefault(); n.focus(); n.click();
+});
+onboardDlg.addEventListener('cancel', () => { try { localStorage.setItem(ONBOARD_KEY, '1'); } catch (_) {} });
+
+/* ---------- Search, shortcuts ---------- */
+const searchDlg = makeDialog('search-dlg');
+searchDlg.innerHTML = `<form method="dialog"><div class="search-box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5L14 14"/></svg><input type="search" id="qIn" placeholder="Search deliverables, courses and study sets" aria-label="Search" aria-controls="qList" autocomplete="off" spellcheck="false"></div><ul class="results" id="qList" role="listbox" aria-label="Results"></ul><p class="hint" id="qHint">↑ ↓ to move · Enter to open · Esc to close</p></form>`;
+let qSel = 0, qRes = [];
+function runSearch() {
+  const q = $('qIn').value.trim().toLowerCase(), words = q.split(/\s+/).filter(Boolean);
+  const has = s => words.every(w => s.toLowerCase().includes(w));
+  qRes = [];
+  if (words.length) {
+    for (const c of state.courses) if (has(`${c.code} ${c.title}`)) qRes.push({ kind: 'course', c, label: `${c.code}${c.title ? ' · ' + c.title : ''}`, sub: `${c.items.length} deliverables` });
+    const its = allItems().filter(i => { const c = itemCourse(i); return has(`${i.title} ${i.notes} ${i.type} ${c ? c.code : ''} ${fmtDay(dueDate(i))} ${MONTHS_SHORT[dueDate(i).getMonth()]}`); })
+      .sort((a, b) => (dueDate(a) < TODAY) - (dueDate(b) < TODAY) || a.date.localeCompare(b.date));
+    for (const i of its.slice(0, 30)) qRes.push({ kind: 'item', it: i, label: i.title, sub: `${itemCourse(i).code} · ${i.type} · ${dueLabel(i)}${i.done ? ' · done' : ''}`, c: itemCourse(i) });
+    for (const d of decks) {
+      if (has(d.name)) qRes.push({ kind: 'deck', d, label: d.name, sub: `Study set · ${d.cards.length} cards` });
+      else { const card = d.cards.find(x => has(`${x.q} ${x.a}`)); if (card) qRes.push({ kind: 'deck', d, label: card.q, sub: `Card in ${d.name}` }); }
+    }
+  }
+  qSel = Math.min(qSel, Math.max(0, qRes.length - 1));
+  $('qList').innerHTML = qRes.slice(0, 40).map((r, i) => `<li role="option" id="qr${i}" aria-selected="${i === qSel}" data-qi="${i}">${r.c ? `<span class="dot" style="background:${colorOf(r.c)}"></span>` : '<span class="dot" style="background:var(--faint)"></span>'}<span><b>${esc(r.label)}</b><small>${esc(r.sub)}</small></span><span class="kind">${r.kind === 'item' ? 'Deliverable' : r.kind === 'course' ? 'Course' : 'Study'}</span></li>`).join('') || (words.length ? '<li class="none">No matches</li>' : '');
+  $('qIn').setAttribute('aria-activedescendant', qRes.length ? 'qr' + qSel : '');
+  const sel = $('qList').querySelector('[aria-selected="true"]'); if (sel) sel.scrollIntoView({ block: 'nearest' });
+}
+function openResult(r) {
+  if (!r) return;
+  searchDlg.close();
+  if (r.kind === 'deck') { setTab('study'); deckId = r.d.id; smMode = 'review'; review = null; renderStudy(); return; }
+  setTab('semester');
+  const cid = r.kind === 'course' ? r.c.id : r.it.cid;
+  state.q = ''; state.show = 'all'; state.filter = 'All'; $('tableSearch').value = ''; $('tableShow').value = 'all';
+  selectCourse(cid);
+  if (r.kind === 'item') {
+    const tr = document.querySelector(`#rows tr[data-id="${CSS.escape(r.it.id)}"]`);
+    if (tr) { tr.scrollIntoView({ block: 'center' }); tr.classList.add('flash'); setTimeout(() => tr.classList.remove('flash'), 1800); const t = tr.querySelector('.cell-in.title'); if (t) t.focus({ preventScroll: true }); }
+  } else $('source').scrollIntoView({ block: 'start' });
+}
+function openSearch() { if (searchDlg.open) return; $('qIn').value = ''; qSel = 0; runSearch(); searchDlg.showModal(); $('qIn').focus(); }
+$('qIn').addEventListener('input', () => { qSel = 0; runSearch(); });
+$('qIn').addEventListener('keydown', e => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); qSel = Math.max(0, Math.min(qRes.length - 1, qSel + (e.key === 'ArrowDown' ? 1 : -1))); runSearch(); }
+  else if (e.key === 'Enter') { e.preventDefault(); openResult(qRes[qSel]); }
+});
+$('qList').addEventListener('click', e => { const li = e.target.closest('[data-qi]'); if (li) openResult(qRes[+li.dataset.qi]); });
+const mod = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl';
+const keysDlg = makeDialog('keys-dlg');
+function openKeys() {
+  const rows = [
+    [`${mod} K`, 'Search everything'], ['/', 'Search (when not typing)'],
+    [window.desktop ? `${mod} 1 – 7` : 'Alt 1 – 7', 'Switch tabs'],
+    [`${mod} Enter`, 'Parse the syllabus you’re editing'],
+    ['Space · 1 – 4', 'Show answer · rate a flashcard'],
+    ...(window.desktop ? [[`${mod} N`, 'New course'], [`${mod} O`, 'Open a syllabus file'], [`${mod} E`, 'Export to calendar'], [`${mod} ⇧ B`, 'Export a backup'], [`${mod} ,`, 'Settings']] : []),
+    ['?', 'This list'], ['Esc', 'Close a dialog'],
+  ];
+  keysDlg.innerHTML = `<form method="dialog"><h2>Keyboard shortcuts</h2><dl class="keys">${rows.map(([k, d]) => `<dt>${k.split(' ').map(x => x === '·' || x === '–' ? x : `<span class="kbd">${esc(x)}</span>`).join(' ')}</dt><dd>${esc(d)}</dd>`).join('')}</dl><div class="actions"><span style="flex:1"></span><button class="btn primary" value="close">Done</button></div></form>`;
+  keysDlg.showModal();
+}
+document.addEventListener('keydown', e => {
+  const typing = e.target.closest && e.target.closest('input, textarea, select, [contenteditable]');
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); openSearch(); return; }
+  if (e.altKey && !e.metaKey && !e.ctrlKey && /^Digit[1-7]$/.test(e.code)) { e.preventDefault(); setTab(TABS[+e.code.slice(5) - 1]); return; }
+  if (typing || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
+  if (e.key === '/') { e.preventDefault(); openSearch(); }
+  else if (e.key === '?') { e.preventDefault(); openKeys(); }
+});
+
+/* ---------- Top bar: search and Your data ---------- */
+const DB_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><ellipse cx="8" cy="3.8" rx="5" ry="2"/><path d="M3 3.8v8.4c0 1.1 2.2 2 5 2s5-.9 5-2V3.8M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/></svg>';
+const SEARCH_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5L14 14"/></svg>';
+for (const [id, icon, label, fn] of [['searchBtn', SEARCH_ICON, `Search (${mod} K)`, openSearch], ['dataBtn', DB_ICON, 'Your data: backups, restore and sync', openData]]) {
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = 'theme-btn'; b.id = id; b.innerHTML = icon; b.title = label; b.setAttribute('aria-label', label.replace(/ \(.*\)$/, ''));
+  b.onclick = fn;
+  $('themeBtn').before(b);
+}
+$('coursebar').addEventListener('click', e => {
+  if (e.target.closest('#saveStatus')) { openData(); return; }
+  if (e.target.closest('#clearSamples')) {
+    const before = snapshot('Before clearing the sample courses');
+    state.courses = state.courses.filter(c => !c.sample);
+    state.view = 'all'; state.editId = state.courses[0] ? state.courses[0].id : null; state.gradeId = state.editId;
+    renderAnnotated(false); renderAll(); markDirty();
+    toast('Cleared the sample courses', { label: 'Undo', fn: () => restoreSnapshot(before, true) });
+  }
+});
+document.addEventListener('ssync:data', e => { const a = e.detail; if (a === 'export') exportBackup(); else if (a === 'import') pickFile('.json,application/json').then(f => f && importBackup(f)); else if (a === 'search') openSearch(); else if (a === 'welcome') openOnboarding(); else if (a === 'keys') openKeys(); else openData(); });
+$('tableSearch').addEventListener('input', e => { state.q = e.target.value.trim(); renderTable(); });
+$('tableShow').addEventListener('change', e => { state.show = e.target.value; renderTable(); });
+$('rows').addEventListener('click', e => { if (e.target.closest('#clearSearch')) { state.q = ''; state.show = 'all'; $('tableSearch').value = ''; $('tableShow').value = 'all'; renderTable(); } });
+$('syncNote').addEventListener('click', e => { const b = e.target.closest('[data-review]'); if (b) { selectCourse(b.dataset.review); $('review').scrollIntoView({ block: 'start' }); } });
+
 /* ---------- Boot: sample courses render at once; saved ones replace them when the store answers ---------- */
-for (const text of SAMPLES) { const c = addCourse(text); applyResult(c, parseLocal(text, c.id), 'local'); }
+for (const text of SAMPLES) { const c = addCourse(text); applyResult(c, parseLocal(text, c.id), 'local'); c.sample = true; }
 state.freshIds = new Set();
 state.editId = state.courses[0].id; state.gradeId = state.editId;
 runParse(false);

@@ -637,9 +637,107 @@ details.settings-box .body { padding: 0 18px 16px; display: grid; gap: 12px; }
 .wk:first-child { border-top: 0; }
 .wk .meter { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
 .wk .meter i { display: block; height: 100%; border-radius: 4px; }
+
+/* Backups, review, onboarding, search */
+.skip { position: absolute; left: 12px; top: -60px; z-index: 50; background: var(--ink); color: var(--surface); padding: 8px 14px; border-radius: 8px; font-weight: 600; text-decoration: none; }
+.skip:focus { top: 10px; }
+main:focus { outline: none; }
+button.save-status { border: 0; background: none; padding: 4px 6px; border-radius: 6px; font: inherit; font-size: 12px; cursor: pointer; text-align: left; }
+button.save-status:hover { color: var(--ink); background: var(--surface-2); }
+.save-status.warn::before { background: var(--warn); }
+.save-status.warn { color: var(--warn); }
+.cchip .tagline { font: 500 10px/1 var(--f-mono); text-transform: uppercase; letter-spacing: .05em; opacity: .6; }
+.cchip .flag { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--warn); color: #fff; font: 700 11px/18px var(--f-body); text-align: center; }
+.cchip.ghost { border-color: transparent; background: transparent; color: var(--muted); font-weight: 500; }
+.cchip.ghost:hover { color: var(--ink); background: var(--surface-2); }
+.toast { border-radius: 14px; text-align: center; }
+.toast.act { pointer-events: auto; display: flex; align-items: center; gap: 14px; padding-right: 8px; }
+.toast-act { border: 0; background: color-mix(in srgb, var(--surface) 18%, transparent); color: inherit; font: 700 13px var(--f-body); padding: 5px 12px; border-radius: 999px; cursor: pointer; }
+.toast-act:hover { background: color-mix(in srgb, var(--surface) 30%, transparent); }
+.banner.warn { border-color: var(--warn); background: var(--warn-soft); }
+.banner .acts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+#planRisk { display: grid; gap: 10px; }
+.banner.problem { margin: 16px 0 0; align-items: center; }
+.review { margin-top: 20px; }
+.review .panel-head { flex-wrap: wrap; row-gap: 8px; }
+.review-notes { margin: 0; padding: 4px 18px 10px 36px; display: grid; gap: 4px; font-size: 13px; color: var(--warn); }
+.review-list { display: grid; }
+.rv { display: grid; grid-template-columns: 150px 104px minmax(160px, 1fr) 120px 84px auto; gap: 6px 8px; align-items: center; padding: 8px 18px; border-top: 1px solid var(--line); }
+.rv .cell-in { border-color: var(--line); background: var(--surface); }
+.rv select.cell-in { width: 100%; }
+.rv-w { display: flex; align-items: center; gap: 3px; color: var(--muted); font-size: 12px; }
+.rv-acts { display: flex; gap: 4px; justify-content: flex-end; align-items: center; }
+.rv-why { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.rv-why small { color: var(--muted); font-size: 12px; margin-right: 8px; }
+.review-slim { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 10px 18px; font-size: 13px; }
+@media (max-width: 860px) {
+  .rv { grid-template-columns: 1fr 1fr; }
+  .rv .title { grid-column: 1 / -1; }
+  .rv-acts { grid-column: 1 / -1; justify-content: flex-start; }
+}
+@keyframes flashrow { from { background: var(--hl); } to { background: transparent; } }
+.ln.flash, tr.flash td { animation: flashrow 1.8s ease-out; }
+.src-meta { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+.src-meta b { color: var(--ink); font-weight: 600; }
+.table-tools { display: flex; gap: 6px; align-items: center; }
+.table-tools input { width: 190px; }
+@media (max-width: 640px) { .table-tools { width: 100%; } .table-tools input { flex: 1; width: auto; } }
+button.pri { border: 0; cursor: pointer; font-family: inherit; }
+button.pri:hover { filter: brightness(.95); text-decoration: underline; }
+.why-line { grid-column: 2 / -1; font-size: 12px; color: var(--muted); }
+.blk .bacts { display: flex; gap: 4px; align-items: center; }
+.blk button.lock { width: 24px; height: 22px; padding: 0; display: grid; place-items: center; }
+.blk button.lock svg { width: 12px; height: 12px; }
+.blk button.lock:hover { color: var(--accent); border-color: var(--accent); }
+.blk.locked button.lock { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+dialog.wide { width: min(620px, calc(100vw - 32px)); }
+dialog.settings { max-height: calc(100vh - 40px); overflow: auto; }
+dialog.settings h3 { font: 600 13px/1.3 var(--f-body); margin: 0; }
+dialog.settings .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.data-sec { display: grid; gap: 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+#dataStatus { border-top: 0; padding-top: 0; }
+.ds { display: grid; gap: 3px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); font-size: 13px; }
+.ds span { color: var(--muted); font-size: 12.5px; }
+.ds.warn { border-color: var(--warn); } .ds.err { border-color: var(--crit); }
+.snaps { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.snaps li { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+.snaps li small { display: block; color: var(--muted); font-size: 12px; }
+.snaps li b { font-weight: 600; }
+.btn.danger-fill { background: var(--crit); border-color: var(--crit); color: #fff; }
+.ob-choices { display: grid; gap: 8px; }
+.ob-choice { display: grid; gap: 2px; text-align: left; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); cursor: pointer; font: inherit; }
+.ob-choice span { color: var(--muted); font-size: 12.5px; }
+.ob-choice[aria-checked="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); background: color-mix(in srgb, var(--accent-soft) 40%, var(--surface)); }
+.ob-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.ob-cols > div { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.ob-cols ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; display: grid; gap: 3px; }
+@media (max-width: 520px) { .ob-cols { grid-template-columns: 1fr; } }
+.ob-dots { display: flex; gap: 6px; }
+.ob-dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
+.ob-dots i.on { background: var(--accent); }
+.ob-hours { display: flex; gap: 16px; flex-wrap: wrap; }
+.ob-hours label { display: flex; gap: 8px; align-items: center; font-size: 13px; font-weight: 600; }
+.ob-hours input { width: 72px; }
+dialog.search-dlg { width: min(560px, calc(100vw - 32px)); margin-top: 12vh; }
+dialog.search-dlg form { gap: 0; padding: 0; }
+.search-box { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.search-box svg { width: 18px; height: 18px; color: var(--muted); flex: none; }
+.search-box input { flex: 1; border: 0; background: transparent; font: 16px var(--f-body); color: var(--ink); outline: none; min-width: 0; }
+.results { list-style: none; margin: 0; padding: 6px; max-height: 50vh; overflow: auto; }
+.results li { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.results li[aria-selected="true"] { background: var(--surface-2); outline: 1px solid var(--line); }
+.results li b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.results li small { color: var(--muted); font-size: 12px; }
+.results .dot { width: 10px; height: 10px; border-radius: 50%; }
+.results .kind { font: 500 10.5px var(--f-mono); text-transform: uppercase; color: var(--faint); }
+.results .none { display: block; color: var(--muted); cursor: default; }
+dialog.search-dlg .hint { padding: 8px 16px 12px; }
+dl.keys { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; margin: 0; font-size: 13px; align-items: center; }
+dl.keys dt { white-space: nowrap; } dl.keys dd { margin: 0; color: var(--muted); }
 </style>
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
 <header class="topbar gutter">
   <div class="wrap">
     <div class="brand">
@@ -656,12 +754,11 @@ details.settings-box .body { padding: 0 18px 16px; display: grid; gap: 12px; }
     <nav class="nav" aria-label="Sections">
       <button type="button" data-tab="semester">Semester</button><button type="button" data-tab="plan">Plan</button><button type="button" data-tab="grades">Grades</button><button type="button" data-tab="study">Study</button><button type="button" data-tab="coach">Coach</button><button type="button" data-tab="rooms">Rooms</button><button type="button" data-tab="insights">Insights</button>
     </nav>
-    <span class="demo-pill">Google sync simulated</span>
     <button type="button" class="theme-btn" id="themeBtn" aria-label="Switch theme"></button>
   </div>
 </header>
 
-<main class="wrap gutter">
+<main class="wrap gutter" id="main" tabindex="-1">
   <div class="pane" data-pane="semester">
   <section class="intro">
     <h1>Turn a syllabus into a <mark>semester you can see.</mark></h1>
@@ -689,6 +786,7 @@ details.settings-box .body { padding: 0 18px 16px; display: grid; gap: 12px; }
         <textarea id="syllabusInput" spellcheck="false" aria-label="Syllabus text" hidden></textarea>
       </div>
       <div class="file-note" id="fileNote" hidden></div>
+      <div class="src-meta" id="srcMeta" hidden></div>
       <div class="source-foot">
         <span class="legend-key"><i style="background:var(--hl)"></i>Date</span>
         <span class="legend-key"><i style="background:transparent;box-shadow:inset 0 -2px 0 var(--ink)"></i>Deliverable type</span>
@@ -729,6 +827,8 @@ details.settings-box .body { padding: 0 18px 16px; display: grid; gap: 12px; }
     </div>
   </section>
 
+  <section class="panel review" id="review" hidden aria-label="Check what was found"></section>
+
   <section class="summary" id="summary" aria-label="Summary"></section>
 
   <section class="panel" id="deliverables">
@@ -738,6 +838,12 @@ details.settings-box .body { padding: 0 18px 16px; display: grid; gap: 12px; }
         <h2>Deliverables</h2>
       </div>
       <div class="spacer"></div>
+      <div class="table-tools">
+        <input type="search" id="tableSearch" class="inline-in" placeholder="Search deliverables" aria-label="Search deliverables">
+        <select id="tableShow" class="inline-in" aria-label="Show">
+          <option value="all">Everything</option><option value="upcoming">Still to do</option><option value="past">Past due date</option><option value="done">Done</option><option value="check">Needs a check</option>
+        </select>
+      </div>
       <div class="filters" id="filters" role="group" aria-label="Filter by type"></div>
     </div>
     <div class="table-scroll">
@@ -812,21 +918,14 @@ details.settings-box .body { padding: 0 18px 16px; display: grid; gap: 12px; }
   <section class="panel" id="sync">
     <div class="panel-head">
       <div>
-        <div class="eyebrow">Step 4 · Sync</div>
-        <h2>Google Calendar</h2>
+        <div class="eyebrow">Step 4 · Calendar</div>
+        <h2>Add to your calendar</h2>
       </div>
       <div class="spacer"></div>
-      <span class="sub">Account connection and push are simulated. Per-event links and the .ics text are real.</span>
+      <span class="sub">Works with Apple Calendar, Outlook and Google Calendar (import the file at calendar.google.com → Settings → Import).</span>
     </div>
     <div class="sync">
       <div class="sync-config">
-        <div class="acct" id="acct">
-          <div class="av" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="3" width="12" height="11" rx="2"/><path d="M2 6.5h12M5.5 1.5v3M10.5 1.5v3"/></svg>
-          </div>
-          <div class="who"><b id="acctName">Not connected</b><span id="acctSub">Connect to push deliverables as events</span></div>
-          <button type="button" class="btn sm primary" id="connectBtn">Connect</button>
-        </div>
         <div class="toggle-row">
           <div>One calendar per course<small>Each course gets its own calendar you can show or hide</small></div>
           <label class="switch"><input type="checkbox" id="perCourse" checked aria-label="One calendar per course"><span></span></label>
@@ -851,19 +950,22 @@ details.settings-box .body { padding: 0 18px 16px; display: grid; gap: 12px; }
           <div>Skip past deadlines<small>Only sync what's still ahead of you</small></div>
           <label class="switch"><input type="checkbox" id="skipPast" checked aria-label="Skip past deadlines"><span></span></label>
         </div>
+        <div class="toggle-row" id="calOnlyNewRow" hidden>
+          <div>Only new and changed events<small>So events you already imported aren’t added twice</small></div>
+          <label class="switch"><input type="checkbox" id="calOnlyNew" checked aria-label="Only new and changed events"><span></span></label>
+        </div>
       </div>
       <div class="sync-run">
         <div class="sync-head">
-          <button type="button" class="btn primary" id="syncBtn" disabled>Sync to calendar</button>
+          <button type="button" class="btn primary" id="syncBtn" disabled>Add to calendar</button>
           <div class="diff" id="diff"></div>
         </div>
-        <div class="progress"><i id="progress"></i></div>
         <ul class="events" id="events"></ul>
         <div class="sync-note" id="syncNote"></div>
-        <details class="ics">
-          <summary>Export as .ics (works with any calendar app)</summary>
+        <details class="ics" id="icsBox">
+          <summary>See or copy the calendar file (.ics)</summary>
           <pre id="ics"></pre>
-          <div class="bar"><button type="button" class="btn sm" id="copyIcs">Copy .ics text</button><span>Paste into a file named <span class="mono">course.ics</span> and import it.</span></div>
+          <div class="bar"><button type="button" class="btn sm" id="copyIcs">Copy .ics text</button><span>Paste into a file named <span class="mono">semester.ics</span> and import it. Each deadline also has its own Google Calendar link in the table above.</span></div>
         </details>
       </div>
     </div>

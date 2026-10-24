@@ -8,9 +8,6 @@
   document.documentElement.classList.add('is-desktop', 'platform-' + d.platform);
 
   /* ---------- Top bar ---------- */
-  const pill = document.querySelector('.demo-pill');
-  pill.textContent = 'Google sync simulated';
-  pill.title = 'Google account sync is simulated. Use "Open in Calendar" to add events to Apple Calendar or Outlook for real.';
   const gear = document.createElement('button');
   gear.type = 'button'; gear.className = 'theme-btn'; gear.id = 'settingsBtn';
   gear.setAttribute('aria-label', 'Settings'); gear.title = 'Settings'; gear.innerHTML = GEAR;
@@ -30,9 +27,17 @@
         <p class="msg" id="keyMsg" hidden></p>
       </section>
       <div class="toggle-row">
-        <div>Deadline reminders<small>A desktop notification the day before something is due</small></div>
+        <div>Deadline reminders<small>Desktop notifications for deliverables you haven't ticked off</small></div>
         <label class="switch"><input type="checkbox" id="remindersToggle" aria-label="Deadline reminders"><span></span></label>
       </div>
+      <section class="field">
+        <label for="remindLead">Remind me</label>
+        <select id="remindLead" class="inline-in">
+          <option value="day">The day before</option>
+          <option value="both">The day before and 2 hours before</option>
+          <option value="hours">2 hours before</option>
+        </select>
+      </section>
       <div class="actions">
         <button type="button" class="btn ghost danger" id="removeKey">Remove key</button>
         <span style="flex:1"></span>
@@ -49,6 +54,7 @@
     $('apiKey').placeholder = settings.hasKey ? (settings.keyFromEnv ? 'Using ANTHROPIC_API_KEY from your environment' : 'Saved. Paste a new key to replace it') : 'sk-ant-…';
     $('removeKey').hidden = !settings.hasKey || settings.keyFromEnv;
     $('remindersToggle').checked = settings.reminders;
+    $('remindLead').value = settings.remindLead || 'day';
     $('keyMsg').hidden = true;
     dlg.showModal();
     $('apiKey').focus();
@@ -59,19 +65,19 @@
   $('settingsForm').addEventListener('submit', async e => {
     e.preventDefault();
     const key = $('apiKey').value.trim();
-    const reminders = $('remindersToggle').checked;
+    const reminders = $('remindersToggle').checked, remindLead = $('remindLead').value;
     if (key) {
       $('saveSettings').disabled = true; keyMsg('Checking key…');
       const test = await d.settings.testKey(key);
       $('saveSettings').disabled = false;
       if (!test.ok) { keyMsg(test.message, true); return; }
-      const res = await d.settings.set({ apiKey: key, reminders });
+      const res = await d.settings.set({ apiKey: key, reminders, remindLead });
       if (!res.ok) { keyMsg(res.message, true); return; }
       dlg.close(); location.reload(); // re-runs the page's Claude check with the new key
       return;
     }
-    await d.settings.set({ reminders });
-    settings.reminders = reminders;
+    await d.settings.set({ reminders, remindLead });
+    Object.assign(settings, { reminders, remindLead });
     dlg.close();
     toast('Settings saved');
     checkReminders();
@@ -88,26 +94,6 @@
     tag.after(b);
     setTimeout(() => { $('useAi').title = 'Add a Claude API key in Settings to read syllabi with Claude'; }, 1000);
   });
-
-  /* ---------- Real calendar export ---------- */
-  async function exportIcs(open) {
-    const text = $('ics').textContent;
-    if (!/BEGIN:VEVENT/.test(text)) { toast('Nothing to export. Turn on sync for some deliverables first.'); return; }
-    const res = await d.saveIcs(text, open);
-    if (res.ok) toast(open ? 'Opened in your calendar app to import' : 'Saved calendar file');
-  }
-  const icsBar = document.querySelector('details.ics .bar');
-  const saveBtn = document.createElement('button');
-  saveBtn.type = 'button'; saveBtn.className = 'btn sm'; saveBtn.textContent = 'Save .ics file…';
-  saveBtn.onclick = () => exportIcs(false);
-  icsBar.prepend(saveBtn);
-  icsBar.querySelector('span').textContent = 'Import it into Apple Calendar, Outlook or Google Calendar.';
-  const openBtn = document.createElement('button');
-  openBtn.type = 'button'; openBtn.className = 'btn'; openBtn.id = 'openInCalendar';
-  openBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="2" y="3" width="12" height="11" rx="2"/><path d="M2 6.5h12M8 8.5v4M6 10.5h4"/></svg> Open in Calendar app';
-  openBtn.title = 'Save a calendar file and open it in Apple Calendar or Outlook to import every event';
-  openBtn.onclick = () => exportIcs(true);
-  $('syncBtn').after(openBtn);
 
   /* ---------- Account ---------- */
   const esc = v => String(v).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -144,9 +130,14 @@
     if (acct.user) {
       adlg.innerHTML = `<form method="dialog"><h2>Your account</h2>
         <div class="acct-card"><span class="avatar lg">${esc(acct.user.email[0].toUpperCase())}</span><div><b>${esc(acct.user.email)}</b><span>Your courses sync to this account. Only you can see them.</span></div></div>
+        <p class="hint">Signing out removes this account's copy from this computer. Everything stays in your account, ready when you sign in again here or anywhere else. This computer goes back to the courses it had before you signed in.</p>
         ${note}
         <div class="actions"><button type="button" class="btn ghost danger" id="signOutBtn">Sign out</button><span style="flex:1"></span><button class="btn primary" value="close">Done</button></div></form>`;
-      adlg.querySelector('#signOutBtn').onclick = async () => { await d.account.signOut(); location.reload(); };
+      adlg.querySelector('#signOutBtn').onclick = async () => {
+        await d.account.signOut();
+        try { localStorage.removeItem('ssync-account-cache-v1'); } catch { /* nothing cached */ }
+        location.reload();
+      };
       return;
     }
     const actions = (label) => `<div class="actions"><span style="flex:1"></span><button type="button" class="btn" id="authCancel">Cancel</button><button type="submit" class="btn primary" id="authSubmit">${label}</button></div>`;
@@ -195,7 +186,25 @@
   let resetEmail = '';
   async function finishSignIn() {
     await moveLocalCoursesIntoAccount();
+    try { localStorage.setItem('ssync-onboarded', '1'); } catch { /* fine */ }
     location.reload(); // the page reloads and loads courses from the account
+  }
+  const localCourses = () => {
+    let raw = [];
+    try { raw = JSON.parse(localStorage.getItem('ssync-courses-v1') || '[]'); } catch { /* nothing saved locally */ }
+    return raw.map(json => { try { return { json, c: JSON.parse(json) }; } catch { return null; } }).filter(Boolean);
+  };
+  // The account already has courses and this computer has its own: let the person choose.
+  function askMerge(mine, accountCount) {
+    return new Promise(resolve => {
+      adlg.innerHTML = `<form method="dialog"><h2>Courses on this computer</h2>
+        <p class="hint">Your account already has ${accountCount} course${accountCount === 1 ? '' : 's'}. This computer has ${mine.length} of its own: <b>${esc(mine.map(x => x.c.code).join(', '))}</b>.</p>
+        <p class="hint"><b>Add them</b> copies them into your account next to the courses already there (up to 8 in all). <b>Keep separate</b> leaves them on this computer: you'll see them again whenever you're signed out.</p>
+        <div class="actions"><span style="flex:1"></span><button type="button" class="btn" id="mergeNo">Keep separate</button><button type="button" class="btn primary" id="mergeYes">Add them</button></div></form>`;
+      adlg.querySelector('#mergeNo').onclick = () => resolve(false);
+      adlg.querySelector('#mergeYes').onclick = () => resolve(true);
+      if (!adlg.open) adlg.showModal();
+    });
   }
   async function startGoogle() {
     mode = 'google'; renderAccount();
@@ -207,16 +216,25 @@
   }
   async function moveLocalCoursesIntoAccount() {
     const listed = await d.cloud.list();
-    if (!listed.ok || listed.docs.some(x => x.id === 'meta')) return; // account already has courses: keep them
-    let local = [];
-    try { local = JSON.parse(localStorage.getItem('ssync-courses-v1') || '[]'); } catch { /* nothing saved locally */ }
-    await d.cloud.set('meta', { v: 1 });
-    for (const json of local) {
-      try { const c = JSON.parse(json); await d.cloud.set('course-' + c.id, { json }); } catch { /* skip unreadable course */ }
+    if (!listed.ok) return;
+    try { localStorage.removeItem('ssync-account-cache-v1'); } catch { /* fine */ } // a different person may have used this computer
+    const at = Date.now();
+    const mine = localCourses().filter(x => !x.c.sample);
+    const accountCourses = listed.docs.filter(x => String(x.id).startsWith('course-'));
+    if (listed.docs.some(x => x.id === 'meta')) {
+      // The account already has a semester. Only add this computer's own courses, and only if asked.
+      if (!mine.length) return;
+      const have = new Set(accountCourses.map(x => x.id));
+      const fresh = mine.filter(x => !have.has('course-' + x.c.id)).slice(0, Math.max(0, 8 - accountCourses.length));
+      if (!fresh.length || !(await askMerge(fresh, accountCourses.length))) return;
+      for (const x of fresh) await d.cloud.set('course-' + x.c.id, { json: x.json, at });
+      return;
     }
+    await d.cloud.set('meta', { v: 1 });
+    for (const x of localCourses()) await d.cloud.set('course-' + x.c.id, { json: x.json, at });
     let extras = [];
     try { extras = JSON.parse(localStorage.getItem('ssync-extras-v1') || '[]'); } catch { /* nothing saved locally */ }
-    for (const [id, json] of extras) if (id === 'extras' || String(id).startsWith('deck-')) await d.cloud.set(id, { json });
+    for (const [id, json] of extras) if (id === 'extras' || String(id).startsWith('deck-')) await d.cloud.set(id, { json, at });
   }
   async function onAuthSubmit(e) {
     e.preventDefault();
@@ -255,31 +273,45 @@
   d.onMenu('settings', openSettings);
   d.onMenu('new-course', () => { const b = $('addCourse'); if (b) b.click(); else toast('You can track up to 8 courses'); });
   d.onMenu('open-file', () => $('fileInput').click());
-  d.onMenu('export-ics', () => exportIcs(true));
+  d.onMenu('export-ics', () => { const b = $('syncBtn'); if (b.disabled) toast('Nothing to export. Turn on calendar sync for some deliverables first.'); else b.click(); });
   d.onMenu('theme', () => $('themeBtn').click());
+  const page = detail => document.dispatchEvent(new CustomEvent('ssync:data', { detail }));
+  for (const [menu, detail] of [['backup-export', 'export'], ['backup-import', 'import'], ['data', 'data'], ['search', 'search'], ['welcome', 'welcome'], ['keys', 'keys']]) d.onMenu(menu, () => page(detail));
+  for (let i = 0; i < 7; i++) d.onMenu('tab-' + i, () => { const b = document.querySelectorAll('.nav [data-tab]')[i]; if (b) b.click(); });
+  // The page asks for these from its welcome guide and Your data.
+  document.addEventListener('ssync:open', e => { if (e.detail === 'settings') openSettings(); else if (e.detail === 'account') { mode = 'up'; openAccount(); } });
 
   /* ---------- Deadline reminders ---------- */
   const NOTIFIED_KEY = 'ssync-notified-v1';
   function readJson(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } }
   async function checkReminders() {
     if (!settings.reminders || !('Notification' in window)) return;
-    const courses = readJson('ssync-courses-v1', []).map(s => { try { return JSON.parse(s); } catch { return null; } }).filter(Boolean);
+    // Signed in, the account's courses live in the page's cache; signed out, in the local list.
+    const cache = readJson('ssync-account-cache-v1', null);
+    const list = cache && Array.isArray(cache.docs) ? cache.docs.filter(([id]) => String(id).startsWith('course-')).map(([, json]) => json) : readJson('ssync-courses-v1', []);
+    const courses = list.map(s => { try { return JSON.parse(s); } catch { return null; } }).filter(c => c && !c.sample);
     if (!courses.length) return;
     const notified = new Set(readJson(NOTIFIED_KEY, []));
-    const now = Date.now(), soon = now + 36 * 3600 * 1000;
+    const now = Date.now(), lead = settings.remindLead || 'day';
+    // Each stage fires once: 'd' within 36 hours of the deadline, 'h' within 2 hours.
+    const stages = [...(lead !== 'hours' ? [['d', 36]] : []), ...(lead !== 'day' ? [['h', 2]] : [])];
     for (const c of courses) for (const it of c.items || []) {
       if (!it.sync || it.done) continue;
       const [y, m, day] = it.date.split('-').map(Number);
       const [h, mi] = (it.time || '23:59').split(':').map(Number);
       const due = new Date(y, m - 1, day, h, mi).getTime();
-      const key = `${it.id}|${it.date}|${it.time}`;
-      if (due <= now || due > soon || notified.has(key)) continue;
+      if (due <= now) continue;
+      const stage = stages.filter(([, hrs]) => due - now <= hrs * 3600 * 1000).pop();
+      if (!stage) continue;
+      const key = `${it.id}|${it.date}|${it.time}${stage[0] === 'h' ? '|h' : ''}`;
+      if (notified.has(key)) continue;
       const when = new Date(due).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' });
-      new Notification(`${c.code}: ${it.title}`, { body: `Due ${when}${it.weight ? ` · ${it.weight}% of your grade` : ''}`, silent: false });
+      new Notification(`${c.code}: ${it.title}`, { body: `${stage[0] === 'h' ? 'Due soon' : 'Due'} ${when}${it.weight ? ` · ${it.weight}% of your grade` : ''}`, silent: false });
       notified.add(key);
+      if (stage[0] === 'h') notified.add(`${it.id}|${it.date}|${it.time}`); // no day-before reminder after this one
     }
     try { localStorage.setItem(NOTIFIED_KEY, JSON.stringify([...notified].slice(-500))); } catch { /* storage full; reminders may repeat */ }
   }
   d.settings.get().then(s => { settings = s; setTimeout(checkReminders, 4000); });
-  setInterval(checkReminders, 30 * 60 * 1000);
+  setInterval(checkReminders, 15 * 60 * 1000);
 })();

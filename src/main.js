@@ -200,7 +200,7 @@ cloud.register(ipcMain);
 /* ---------- Settings IPC ---------- */
 ipcMain.handle('settings:get', async () => {
   const s = await readSettings();
-  return { hasKey: !!(await getApiKey()), keyFromEnv: !s.apiKey && !!process.env.ANTHROPIC_API_KEY, reminders: s.reminders !== false, canEncrypt: safeStorage.isEncryptionAvailable() };
+  return { hasKey: !!(await getApiKey()), keyFromEnv: !s.apiKey && !!process.env.ANTHROPIC_API_KEY, reminders: s.reminders !== false, remindLead: ['day', 'both', 'hours'].includes(s.remindLead) ? s.remindLead : 'day', canEncrypt: safeStorage.isEncryptionAvailable() };
 });
 ipcMain.handle('settings:set', async (_e, patch) => {
   const s = await readSettings();
@@ -211,6 +211,7 @@ ipcMain.handle('settings:set', async (_e, patch) => {
     else s.apiKey = safeStorage.encryptString(key).toString('base64');
   }
   if (typeof patch.reminders === 'boolean') s.reminders = patch.reminders;
+  if (['day', 'both', 'hours'].includes(patch.remindLead)) s.remindLead = patch.remindLead;
   await writeSettings(s);
   return { ok: true };
 });
@@ -224,18 +225,81 @@ ipcMain.handle('settings:test-key', async (_e, key) => {
   }
 });
 
-/* ---------- Calendar file export ---------- */
-ipcMain.handle('ics:save', async (_e, { text, open }) => {
+/* ---------- Files the page saves: calendar, backups, spreadsheets ---------- */
+const SAVE_KINDS = {
+  ics: { name: 'Calendar', crlf: true },
+  json: { name: 'SemesterSync backup' },
+  csv: { name: 'Spreadsheet', crlf: true },
+};
+ipcMain.handle('file:save', async (_e, { name, text, open }) => {
+  const ext = String(name || '').split('.').pop().toLowerCase();
+  const kind = SAVE_KINDS[ext];
+  if (!kind || typeof text !== 'string' || text.length > 100 * 1024 * 1024) return { ok: false };
+  const safe = path.basename(String(name)).replace(/[^\w .-]/g, '_').slice(0, 120);
   const { canceled, filePath } = await dialog.showSaveDialog(win, {
-    title: 'Save calendar file',
-    defaultPath: path.join(app.getPath('documents'), 'semester-deadlines.ics'),
-    filters: [{ name: 'Calendar', extensions: ['ics'] }],
+    title: ext === 'ics' ? 'Save calendar file' : ext === 'json' ? 'Save backup' : 'Save spreadsheet',
+    defaultPath: path.join(app.getPath('documents'), safe),
+    filters: [{ name: kind.name, extensions: [ext] }],
   });
   if (canceled || !filePath) return { ok: false, canceled: true };
-  await fs.writeFile(filePath, text.replace(/\r?\n/g, '\r\n'), 'utf8');
-  if (open) await shell.openPath(filePath); // hands the file to Apple Calendar / Outlook to import
-  return { ok: true, filePath };
+  await fs.writeFile(filePath, kind.crlf ? text.replace(/\r?\n/g, '\r\n') : text, 'utf8');
+  if (open && ext === 'ics') await shell.openPath(filePath); // hands the file to Apple Calendar / Outlook to import
+  return { ok: true };
 });
+
+/* ---------- Daily backups in the app's data folder ---------- */
+const backupDir = () => path.join(app.getPath('userData'), 'Backups');
+const BACKUP_RE = /^SemesterSync-\d{4}-\d{2}-\d{2}\.json$/;
+ipcMain.handle('backup:auto', async (_e, text) => {
+  if (typeof text !== 'string' || text.length > 100 * 1024 * 1024) return { ok: false };
+  const d = new Date(), day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  await fs.mkdir(backupDir(), { recursive: true });
+  const file = path.join(backupDir(), `SemesterSync-${day}.json`);
+  await fs.writeFile(file + '.tmp', text, 'utf8');
+  await fs.rename(file + '.tmp', file); // a crash mid-write never leaves a half-written backup
+  const names = (await fs.readdir(backupDir())).filter(n => BACKUP_RE.test(n)).sort().reverse();
+  for (const n of names.slice(30)) await fs.unlink(path.join(backupDir(), n)).catch(() => {});
+  return { ok: true };
+});
+ipcMain.handle('backup:list', async () => {
+  try {
+    const names = (await fs.readdir(backupDir())).filter(n => BACKUP_RE.test(n)).sort().reverse();
+    const files = await Promise.all(names.map(async name => ({ name, mtime: (await fs.stat(path.join(backupDir(), name))).mtimeMs })));
+    return { ok: true, files };
+  } catch { return { ok: true, files: [] }; }
+});
+ipcMain.handle('backup:read', async (_e, name) => {
+  if (!BACKUP_RE.test(String(name))) return { ok: false };
+  try { return { ok: true, text: await fs.readFile(path.join(backupDir(), name), 'utf8') }; } catch { return { ok: false }; }
+});
+ipcMain.handle('backup:open-folder', async () => { await fs.mkdir(backupDir(), { recursive: true }); await shell.openPath(backupDir()); return { ok: true }; });
+
+/* ---------- Original syllabus files, kept next to each course ---------- */
+const sourceDir = cid => path.join(app.getPath('userData'), 'Sources', cid);
+const CID_RE = /^[\w-]{1,40}$/;
+ipcMain.handle('source:keep', async (_e, { cid, name, bytes }) => {
+  if (!CID_RE.test(String(cid)) || !bytes || bytes.byteLength > 25 * 1024 * 1024) return { ok: false };
+  const safe = path.basename(String(name || 'syllabus')).replace(/[^\w .()-]/g, '_').slice(0, 120) || 'syllabus';
+  await fs.mkdir(sourceDir(cid), { recursive: true });
+  await fs.writeFile(path.join(sourceDir(cid), safe), Buffer.from(bytes));
+  const all = await fs.readdir(sourceDir(cid));
+  if (all.length > 6) {
+    const dated = await Promise.all(all.map(async n => [n, (await fs.stat(path.join(sourceDir(cid), n))).mtimeMs]));
+    for (const [n] of dated.sort((a, b) => b[1] - a[1]).slice(6)) await fs.unlink(path.join(sourceDir(cid), n)).catch(() => {});
+  }
+  return { ok: true };
+});
+ipcMain.handle('source:open', async (_e, cid) => {
+  if (!CID_RE.test(String(cid))) return { ok: false };
+  try {
+    const all = await fs.readdir(sourceDir(cid));
+    if (!all.length) return { ok: false };
+    // One file opens directly; several open the folder so the person can pick.
+    const err = await shell.openPath(all.length === 1 ? path.join(sourceDir(cid), all[0]) : sourceDir(cid));
+    return { ok: !err };
+  } catch { return { ok: false }; }
+});
+ipcMain.handle('source:clear', async () => { await fs.rm(path.join(app.getPath('userData'), 'Sources'), { recursive: true, force: true }); return { ok: true }; });
 
 /* ---------- Window ---------- */
 function createWindow() {
@@ -256,6 +320,7 @@ function createWindow() {
     },
   });
   win.once('ready-to-show', () => win.show());
+  if (process.env.SEMESTERSYNC_SMOKE) smokeTest(win, process.env.SEMESTERSYNC_SMOKE);
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
   // Links (e.g. "Add to Google Calendar") open in the user's browser, never inside the app.
@@ -266,6 +331,19 @@ function createWindow() {
   win.webContents.on('will-navigate', (e, url) => {
     if (!url.startsWith('file://')) { e.preventDefault(); if (/^https:\/\//.test(url)) shell.openExternal(url); }
   });
+}
+
+// Used by the release workflow to check a built installer actually starts: loads the page,
+// collects console errors, writes a JSON report to the given path and quits.
+function smokeTest(w, out) {
+  const errors = [];
+  w.webContents.on('console-message', e => { if ((e.level === 'error' || e.level >= 3)) errors.push(String(e.message).slice(0, 300)); });
+  w.webContents.once('did-finish-load', () => setTimeout(async () => {
+    let page = {};
+    try { page = await w.webContents.executeJavaScript(`({ title: document.title, tabs: document.querySelectorAll('.nav [data-tab]').length, courses: document.querySelectorAll('#coursebar [data-view]').length, rows: document.querySelectorAll('#rows tr').length })`); } catch (e) { errors.push(String(e)); }
+    await fs.writeFile(out, JSON.stringify({ ok: !errors.length && page.tabs === 7 && page.rows > 0, version: app.getVersion(), page, errors }, null, 2));
+    app.exit(0);
+  }, 4000));
 }
 
 function send(channel) { if (win && !win.isDestroyed()) win.webContents.send(channel); }
@@ -294,6 +372,10 @@ function buildMenu() {
         { label: 'Open Syllabus File…', accelerator: 'CmdOrCtrl+O', click: () => send('menu:open-file') },
         { label: 'Export Calendar File…', accelerator: 'CmdOrCtrl+E', click: () => send('menu:export-ics') },
         { type: 'separator' },
+        { label: 'Export Backup…', accelerator: 'CmdOrCtrl+Shift+B', click: () => send('menu:backup-export') },
+        { label: 'Restore From Backup…', click: () => send('menu:backup-import') },
+        { label: 'Your Data…', click: () => send('menu:data') },
+        { type: 'separator' },
         ...(isMac ? [{ role: 'close' }] : [
           { label: 'Settings…', accelerator: 'Ctrl+,', click: () => send('menu:settings') },
           { label: 'Account…', click: () => send('menu:account') },
@@ -306,6 +388,9 @@ function buildMenu() {
     {
       label: 'View',
       submenu: [
+        ...['Semester', 'Plan', 'Grades', 'Study', 'Coach', 'Rooms', 'Insights'].map((label, i) => ({ label, accelerator: `CmdOrCtrl+${i + 1}`, click: () => send('menu:tab-' + i) })),
+        { label: 'Search…', accelerator: 'CmdOrCtrl+K', click: () => send('menu:search') },
+        { type: 'separator' },
         { label: 'Toggle Light/Dark', accelerator: 'CmdOrCtrl+Shift+L', click: () => send('menu:theme') },
         { type: 'separator' },
         { role: 'reload' },
@@ -319,7 +404,12 @@ function buildMenu() {
     { role: 'windowMenu' },
     {
       role: 'help',
-      submenu: [{ label: 'Get a Claude API Key', click: () => shell.openExternal('https://platform.claude.com/settings/keys') }],
+      submenu: [
+        { label: 'Welcome Guide', click: () => send('menu:welcome') },
+        { label: 'Keyboard Shortcuts', click: () => send('menu:keys') },
+        { type: 'separator' },
+        { label: 'Get a Claude API Key', click: () => shell.openExternal('https://platform.claude.com/settings/keys') },
+      ],
     },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));

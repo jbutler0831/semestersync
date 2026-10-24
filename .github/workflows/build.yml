@@ -3,17 +3,17 @@ name: Build installers
 on:
   push:
     tags: ["v*"]
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 jobs:
-  build:
+  # The regression tests run the real app with a fake Claude API and a fake account server.
+  test:
     strategy:
+      fail-fast: false
       matrix:
-        include:
-          - os: macos-latest
-            script: dist:mac
-          - os: windows-latest
-            script: dist:win
+        os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -22,9 +22,44 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run ${{ matrix.script }} -- --publish never
+      - run: npm test
+
+  build:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Signing and notarization switch on by themselves once these repository secrets exist
+      # (see "Signing the installers" in the README). Without them the installers are unsigned.
+      - if: runner.os == 'macOS'
+        run: npm run dist:mac -- --publish never
         env:
+          CSC_LINK: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.MAC_CERT_P12_BASE64 != '' }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - if: runner.os == 'Windows'
+        run: npm run dist:win -- --publish never
+        env:
+          CSC_LINK: ${{ secrets.WIN_CERT_P12_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CERT_PASSWORD }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: Install and start the built app
+        shell: bash
+        run: scripts/verify-installer.sh
+        env:
+          REQUIRE_SIGNED: ${{ vars.REQUIRE_SIGNED || '0' }}
       - uses: actions/upload-artifact@v4
         with:
           name: installers-${{ matrix.os }}
@@ -46,10 +81,13 @@ jobs:
           path: installers
           merge-multiple: true
       - run: |
+          (cd installers && sha256sum * > SHA256SUMS.txt)
           cat > notes.md <<'NOTES'
-          **Mac:** download `SemesterSync-*-universal.dmg`, open it and drag SemesterSync into Applications. The first time, right-click the app and choose **Open**.
+          **Mac:** download `SemesterSync-*-universal.dmg`, open it and drag SemesterSync into Applications. If the app isn't signed yet, right-click it and choose **Open** the first time.
 
           **Windows:** download `SemesterSync-Setup-*.exe` and run it. If Windows shows "Windows protected your PC", choose **More info → Run anyway**.
+
+          `SHA256SUMS.txt` lists a checksum for each file, so you can check a download wasn't damaged or changed.
           NOTES
           gh release create "$GITHUB_REF_NAME" installers/* --repo "$GITHUB_REPOSITORY" --title "SemesterSync $GITHUB_REF_NAME" --notes-file notes.md
         env:
