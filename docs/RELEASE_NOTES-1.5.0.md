@@ -9,7 +9,7 @@
   - A backup is made before any upgrade.
   - Nothing is uploaded anywhere without your permission.
 - **New account system, coming soon.** SemesterSync now has its own account system with:
-  - Email sign-up with a 6-digit code
+  - Email and password sign-up
   - Password reset
   - Seeing and signing out your computers
   - Deleting your account
