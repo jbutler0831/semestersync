@@ -6,6 +6,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Publish the installers to this existing tag (e.g. v1.5.0). Leave empty to only build."
+        required: false
+        default: ""
 
 jobs:
   # The regression tests run the real app with a fake Claude API and a fake account server.
@@ -104,21 +109,29 @@ jobs:
             dist/*.zip
             dist/*.exe
 
-  # On a version tag, put the installers on the repo's Releases page for download.
+  # On a version tag (or a manual run naming one), put the installers on the Releases page.
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(inputs.release_tag, 'v')
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      TAG: ${{ inputs.release_tag || github.ref_name }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: docs
       - uses: actions/download-artifact@v4
         with:
           path: installers
           merge-multiple: true
       - run: |
           (cd installers && sha256sum * > SHA256SUMS.txt)
-          cat > notes.md <<'NOTES'
+          # The version's notes (docs/RELEASE_NOTES-<version>.md, without its title), then how to install.
+          NOTES_FILE="docs/RELEASE_NOTES-${TAG#v}.md"
+          if [ -f "$NOTES_FILE" ]; then tail -n +2 "$NOTES_FILE" > notes.md; echo >> notes.md; else : > notes.md; fi
+          cat >> notes.md <<'NOTES'
           **Mac:** download `SemesterSync-*-universal.dmg`, open it and drag SemesterSync into Applications. The app isn't signed by Apple yet, so the first time you open it macOS says it "could not verify SemesterSync is free of malware". To open it anyway:
           1. Click **Done** on the warning (not Move to Trash).
           2. Open **System Settings → Privacy & Security**, scroll down to Security and click **Open Anyway** next to *"SemesterSync" was blocked*.
@@ -131,6 +144,7 @@ jobs:
 
           `SHA256SUMS.txt` lists a checksum for each file, so you can check a download wasn't damaged or changed.
           NOTES
-          gh release create "$GITHUB_REF_NAME" installers/* --repo "$GITHUB_REPOSITORY" --title "SemesterSync $GITHUB_REF_NAME" --notes-file notes.md
+          # --verify-tag: only ever publishes to a tag that already exists.
+          gh release create "$TAG" installers/* --repo "$GITHUB_REPOSITORY" --verify-tag --title "SemesterSync $TAG" --notes-file notes.md
         env:
           GH_TOKEN: ${{ github.token }}
