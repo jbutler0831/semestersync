@@ -37,15 +37,6 @@ def send(to: str, subject: str, text: str) -> None:
 
 
 def send_code(to: str, purpose: str, code: str, minutes: int) -> None:
-    if purpose == "verify":
-        subject = "Your SemesterSync code"
-        body = f"Your SemesterSync verification code is:\n\n    {code}\n\nEnter it in the app to finish creating your account. It expires in {minutes} minutes.\n\nIf you didn't create a SemesterSync account, you can ignore this email."
-    else:
-        subject = "Reset your SemesterSync password"
-        body = f"Your SemesterSync password reset code is:\n\n    {code}\n\nEnter it in the app with your new password. It expires in {minutes} minutes.\n\nIf you didn't ask to reset your password, you can ignore this email; your password hasn't changed."
-    send(to, subject, body)
-
-
-def send_already_registered(to: str) -> None:
-    send(to, "You already have a SemesterSync account",
-         "Someone (hopefully you) tried to create a SemesterSync account with this email, but you already have one.\n\nSign in instead, or choose \"Forgot password?\" in the app.\n\nIf this wasn't you, you can ignore this email.")
+    """Only password reset sends a code (purpose "reset")."""
+    send(to, "Reset your SemesterSync password",
+         f"Your SemesterSync password reset code is:\n\n    {code}\n\nEnter it in the app with your new password. It expires in {minutes} minutes.\n\nIf you didn't ask to reset your password, you can ignore this email; your password hasn't changed.")

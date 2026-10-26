@@ -9,7 +9,7 @@ const os = require('node:os');
 const { spawn } = require('node:child_process');
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'semestersync-acct-'));
-const PORT = 8765;
+const PORT = 8767; // not 8765, which serve-test.sh uses by default for trying the app by hand
 const API = `http://127.0.0.1:${PORT}`;
 process.env.SEMESTERSYNC_DATA_DIR = path.join(TMP, 'profile');
 process.env.SEMESTERSYNC_API_URL = API;
@@ -22,7 +22,7 @@ setTimeout(() => { console.log('FAIL  test run took over 6 minutes; stopping'); 
 
 /* ---------- The API, with emails printed to its output ---------- */
 const mail = [];
-const server = spawn(path.join(__dirname, '..', 'backend', 'scripts', 'serve-test.sh'), [], { env: { ...process.env, API_TEST_PORT: String(PORT) }, stdio: ['ignore', 'pipe', 'pipe'] });
+const server = spawn(path.join(__dirname, '..', 'backend', 'scripts', 'serve-test.sh'), [], { env: { ...process.env, API_TEST_PORT: String(PORT), PG_TEST_PORT: '54332' }, stdio: ['ignore', 'pipe', 'pipe'] });
 let out = '';
 server.stdout.on('data', b => {
   out += b.toString();
@@ -82,20 +82,10 @@ app.on('browser-window-created', (_e, win) => {
       await fill({ authEmail: 'student@example.edu', authPass: 'short' });
       check('a short password is refused before sending', /Create your account/.test(await dlg()) && mail.length === 0);
       await fill({ authEmail: 'student@example.edu', authPass: 'first password 1' });
-      check('creating an account asks for the emailed code', !!(await waitText(/Check your email/)), await dlg());
-      const code1 = await codeFor('student@example.edu', 1);
-      check('the email has a 6-digit code', !!code1 && /SemesterSync/.test(mail[0].subject), mail[0]);
-      await fill({ authCode: code1 === '000000' ? '111111' : '000000' });
-      check('a wrong code is explained', !!(await waitText(/isn’t right|isn't right/)), await dlg());
-      await click('#resendCode');
-      const code2 = await codeFor('student@example.edu', 2);
-      check('“Send a new code” sends another', !!code2);
-      await fill({ authCode: code1 });
-      if (code1 !== code2) check('the older code no longer works', !!(await waitText(/isn’t right|isn't right/)), await dlg());
-      await fill({ authCode: ' ' + code2 + ' ' });
       const asked = await notNow();
-      check('after signing in it asks about cloud sync, uploading nothing unless you agree', /Upload and turn on sync|Turn on sync/.test(asked || '') && /Not now/.test(asked || ''), asked);
-      check('the newest code signs you in', !!(await waitText(/Your account[\s\S]*student@example\.edu/)), await dlg());
+      check('creating an account signs you in at once, then asks about cloud sync, uploading nothing unless you agree', /Upload and turn on sync|Turn on sync/.test(asked || '') && /Not now/.test(asked || ''), asked);
+      check('no code and no email', !(await dlg()).match(/code/i) && mail.length === 0, mail);
+      check('the dialog shows the new account', !!(await waitText(/Your account[\s\S]*student@example\.edu/)), await dlg());
       check('the top bar shows the account', /student@example\.edu/.test(await js(`document.getElementById('accountBtn').innerText`)));
       check('signing in doesn’t change the courses on this computer', (await js(`document.getElementById('coursebar').innerText`)) === coursesBefore);
       check('with sync declined, it says nothing is uploaded', /Cloud sync is off: nothing is uploaded/.test(await dlg()), await dlg());
@@ -140,30 +130,29 @@ app.on('browser-window-created', (_e, win) => {
       await click('#forgotBtn'); await sleep(100);
       await fill({ authEmail: 'student@example.edu' });
       check('forgot password asks for the emailed code', !!(await waitText(/Choose a new password/)), await dlg());
-      const reset = await codeFor('student@example.edu', 3);
-      check('a reset code is emailed', !!reset && /Reset/.test(mail[2].subject), mail[2]);
+      const reset = await codeFor('student@example.edu', 1);
+      check('a reset code is emailed', !!reset && /Reset/.test(mail[0].subject), mail[0]);
       await fill({ authCode: reset, authPass: 'third password 3' });
       await notNow();
       check('resetting the password signs you in', !!(await waitText(/Your account[\s\S]*student@example\.edu/)), await dlg());
 
       console.log('\n# A session ended elsewhere');
       await post('/v1/auth/password-reset/request', { email: 'student@example.edu' });
-      const r2 = await codeFor('student@example.edu', 4);
+      const r2 = await codeFor('student@example.edu', 2);
       await post('/v1/auth/password-reset/confirm', { email: 'student@example.edu', code: r2, new_password: 'fourth password 4' });
       await js(`document.querySelector('dialog.account').close()`);
       await click('#accountBtn');
       check('a session ended by a reset elsewhere shows as signed out', !!(await waitText(/Sign in/)) && !fs.existsSync(tokenFile), await dlg());
 
-      console.log('\n# Unconfirmed email');
+      console.log('\n# An email that already has an account');
+      await click('[data-m="up"]');
+      await fill({ authEmail: 'student@example.edu', authPass: 'someone else 1' });
+      check('creating a second account for the same email says to sign in instead', !!(await waitText(/already an account[\s\S]*Sign in/)) && /Sign in/.test(await js(`document.querySelector('dialog.account h2').textContent`)), await dlg());
+      check('and keeps the email filled in', (await js(`document.getElementById('authEmail').value`)) === 'student@example.edu');
       await click('[data-m="up"]');
       await fill({ authEmail: 'second@example.edu', authPass: 'another password' });
-      await waitText(/Check your email/);
-      await click('#authCancel'); await sleep(100);
-      await fill({ authEmail: 'second@example.edu', authPass: 'another password' });
-      check('signing in before confirming goes to the code screen', !!(await waitText(/Check your email[\s\S]*Confirm your email first/)), await dlg());
-      await fill({ authCode: await codeFor('second@example.edu', 1) });
       await notNow();
-      check('and the code finishes it', !!(await waitText(/Your account[\s\S]*second@example\.edu/)), await dlg());
+      check('a second account can be created', !!(await waitText(/Your account[\s\S]*second@example\.edu/)), await dlg());
 
       console.log('\n# Delete account');
       await click('#delBtn'); await sleep(100);
@@ -175,7 +164,7 @@ app.on('browser-window-created', (_e, win) => {
       check('the courses on this computer are untouched', (await js(`document.getElementById('coursebar').innerText`)) === coursesBefore);
 
       const logs = errOut + out;
-      check('the server never logged a password or code', !/first password|second password|third password|another password/.test(logs) && ![code1, code2, reset].some(c => c && errOut.includes(c)));
+      check('the server never logged a password or code', !/first password|second password|third password|another password/.test(logs) && ![reset, r2].some(c => c && errOut.includes(c)));
     } catch (e) { check('test run finished without crashing', false, String(e && e.stack || e)); }
     const failed = results.filter(x => !x).length;
     console.log(`\n${results.length - failed} passed, ${failed} failed`);

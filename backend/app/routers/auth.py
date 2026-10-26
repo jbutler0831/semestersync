@@ -1,10 +1,15 @@
-"""Account creation, email verification, sign-in, sign-out and password reset.
+"""Account creation, sign-in, sign-out and password reset.
 
-Responses never reveal whether an email has an account, except sign-in with the correct password
-for an account whose email isn't verified yet (the person has proved they know the password)."""
+Signing up needs only an email and a password, and signs in straight away; nothing is emailed. Email is used
+only for "Forgot password": a 6-digit code goes to the address, and entering it sets a new password and signs
+out every computer, so the person who reads that inbox always ends up in control of the account.
+
+Sign-up says when an email already has an account (there's no other way to tell someone to sign in instead);
+sign-in and password reset give the same answer whether or not it does."""
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .. import email as mail
 from ..config import settings
@@ -12,7 +17,7 @@ from ..db import get_db
 from ..deps import Caller, client_ip, current
 from ..models import AuthSession, EmailCode, User
 from ..ratelimit import hit, prune
-from ..schemas import EmailIn, LoginIn, RegisterIn, ResetConfirmIn, SessionOut, Status, UserOut, VerifyIn
+from ..schemas import EmailIn, LoginIn, RegisterIn, ResetConfirmIn, SessionOut, Status, UserOut
 from ..security import code_hash, hash_password, needs_rehash, new_code, new_session_token, same, verify_password
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
@@ -80,41 +85,20 @@ def limit_email_sends(db: Session, request: Request, email: str, kind: str) -> N
     hit(db, f"mail:{email}", 5, HOUR)
 
 
-@router.post("/register", response_model=Status, status_code=202)
+@router.post("/register", response_model=SessionOut, status_code=201)
 def register(body: RegisterIn, request: Request, db: Session = Depends(get_db)):
-    limit_email_sends(db, request, body.email, "register")
-    user = find_user(db, body.email)
-    if user and user.email_verified_at:
-        mail.send_already_registered(user.email)
-        return SENT
-    if user:  # never verified: whoever can read the inbox decides the password
-        user.password_hash = hash_password(body.password)
-        user.password_changed_at = now()
-    else:
-        user = User(email=body.email, password_hash=hash_password(body.password))
-        db.add(user)
+    hit(db, f"register:ip:{client_ip(request)}", 20, HOUR)
+    if find_user(db, body.email):
+        fail(db, 409, "email_taken", "There's already an account with this email. Sign in, or reset the password if you forgot it.")
+    user = User(email=body.email, password_hash=hash_password(body.password))
+    db.add(user)
+    try:
         db.flush()
-    send_code(db, user, "verify")
-    return SENT
-
-
-@router.post("/verify", response_model=SessionOut)
-def verify(body: VerifyIn, request: Request, db: Session = Depends(get_db)):
-    hit(db, f"code:ip:{client_ip(request)}", 30, HOUR)
-    user = find_user(db, body.email)
-    check_code(db, user, "verify", body.code)
-    user.email_verified_at = user.email_verified_at or now()
+    except IntegrityError:  # the same email signed up a moment ago
+        db.rollback()
+        raise HTTPException(409, detail={"code": "email_taken", "message": "There's already an account with this email. Sign in, or reset the password if you forgot it."})
     prune(db)
     return start_session(db, user, body.device)
-
-
-@router.post("/resend", response_model=Status, status_code=202)
-def resend(body: EmailIn, request: Request, db: Session = Depends(get_db)):
-    limit_email_sends(db, request, body.email, "resend")
-    user = find_user(db, body.email)
-    if user and not user.email_verified_at:
-        send_code(db, user, "verify")
-    return SENT
 
 
 @router.post("/login", response_model=SessionOut)
@@ -125,8 +109,6 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
     user = find_user(db, body.email)
     if not verify_password(user.password_hash if user else None, body.password):
         fail(db, 401, "invalid_credentials", "That email and password don't match.")
-    if not user.email_verified_at:
-        fail(db, 403, "email_not_verified", "Confirm your email first. Enter the code we sent, or ask for a new one.")
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(body.password)
     return start_session(db, user, body.device)

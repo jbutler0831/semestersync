@@ -17,15 +17,11 @@ class EmailIn(BaseModel):
 
 class RegisterIn(EmailIn):
     password: str = Field(min_length=PASSWORD_MIN, max_length=PASSWORD_MAX)
+    device: str = Field("", max_length=80)
 
 
 class LoginIn(EmailIn):
     password: str = Field(min_length=1, max_length=PASSWORD_MAX)
-    device: str = Field("", max_length=80)
-
-
-class VerifyIn(EmailIn):
-    code: str = Field(pattern=r"^\s*\d{6}\s*$")
     device: str = Field("", max_length=80)
 
 

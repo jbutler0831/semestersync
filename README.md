@@ -93,9 +93,9 @@ Without a key the app still works. It uses the built-in local parser.
 
 Accounts are optional. SemesterSync opens straight into the app, every feature works without an account, and courses are always saved on the computer. An account is an email and password on SemesterSync's own server (`backend/`); no outside sign-in service is used.
 
-- **Create account:** email and password (8 to 128 characters). The server emails a 6-digit code (valid 15 minutes, 5 tries); typing it in confirms the email and signs you in. **Send a new code** sends another; only the newest works.
+- **Create account:** email and password (8 to 128 characters), and you're signed in. Nothing is emailed. An email that already has an account is told to sign in instead.
 - **Sign in / Sign out.** Signing out keeps the courses on the computer. On a shared computer, tick **Also remove my courses, settings and backups from this computer**.
-- **Forgot password?** emails a 6-digit code; type it with a new password. Every computer signed in to the account is signed out.
+- **Forgot password?** emails a 6-digit code (valid 15 minutes, 5 tries; only the newest works); type it with a new password. Every computer signed in to the account is signed out. This is the only email the server sends. Because sign-up doesn't check the email, someone could make an account with an address that isn't theirs; the address's owner can always take it over with **Forgot password?**.
 - **Your account:** change password (signs out the other computers), see **Signed-in computers** and sign any of them out, and **Delete account** (asks for the password; deletes the account at once, and leaves the courses on the computer).
 - **Where the session lives:** the main process (`src/account.js`) talks to the API; the page never sees the session token. The token is encrypted with the system keychain (`safeStorage`) in `account.bin` in the app's data folder; without a keychain it's kept in memory until the app quits.
 - **Server address:** `SEMESTERSYNC_API_URL`, or `apiUrl` in `src/config.json`. Installed builds only accept `https://` addresses; `http://localhost` works only when running from source. While it's empty, the account dialog says accounts aren't available and everything else works as usual.

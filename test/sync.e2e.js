@@ -84,9 +84,7 @@ app.on('browser-window-created', (_e, win) => {
       await A.until(`!!document.querySelector('#coursebar [data-view]')`); await sleep(1000);
 
       console.log('\n# Account and first upload');
-      await post('/v1/auth/register', { email: 'sync@example.edu', password: 'sync password 1' });
-      await waitFor(() => mail.length);
-      await post('/v1/auth/verify', { email: 'sync@example.edu', code: /\b(\d{6})\b/.exec(mail[0].text)[1], device: 'probe' });
+      await post('/v1/auth/register', { email: 'sync@example.edu', password: 'sync password 1', device: 'probe' });
       probe = (await post('/v1/auth/login', { email: 'sync@example.edu', password: 'sync password 1', device: 'probe' })).token;
       await addCourse(A, SYLLABUS, 'BIO 150');
       await A.click('#accountBtn'); await sleep(300);

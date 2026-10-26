@@ -1,6 +1,6 @@
 # SemesterSync account server
 
-Optional accounts and cloud sync for the SemesterSync desktop app: create an account, confirm the email with a 6-digit code, sign in and out, reset a forgotten password, change the password, see and sign out signed-in computers, delete the account, keep courses in sync between computers (only after the person agrees, in the app), and host study rooms.
+Optional accounts and cloud sync for the SemesterSync desktop app: create an account with an email and password, sign in and out, reset a forgotten password, change the password, see and sign out signed-in computers, delete the account, keep courses in sync between computers (only after the person agrees, in the app), and host study rooms.
 
 FastAPI, SQLAlchemy 2, Alembic, PostgreSQL 17, Argon2id (`argon2-cffi`). The desktop app talks to it over HTTPS and never connects to the database.
 
@@ -46,14 +46,12 @@ All requests and responses are JSON. Errors look like `{"error": {"code": "...",
 
 | Method and path | Body | Answer |
 |---|---|---|
-| `POST /v1/auth/register` | `email`, `password` | `202 {"status":"sent"}` and an email with a code. The same answer whether or not the email already has an account (an existing account gets a "you already have an account" email instead). |
-| `POST /v1/auth/verify` | `email`, `code`, `device` | `200` session: `token`, `expires_at`, `user` |
-| `POST /v1/auth/resend` | `email` | `202`, a new code if the account isn't confirmed yet |
-| `POST /v1/auth/login` | `email`, `password`, `device` | `200` session; `401 invalid_credentials` for a wrong email or password (same answer for both); `403 email_not_verified` |
+| `POST /v1/auth/register` | `email`, `password`, `device` | `201` session: `token`, `expires_at`, `user`. Nothing is emailed. `409 email_taken` if the email already has an account. |
+| `POST /v1/auth/login` | `email`, `password`, `device` | `200` session; `401 invalid_credentials` for a wrong email or password (same answer for both) |
 | `POST /v1/auth/logout` | | Ends this session |
 | `POST /v1/auth/password-reset/request` | `email` | `202`, the same answer whether or not the account exists |
 | `POST /v1/auth/password-reset/confirm` | `email`, `code`, `new_password` | Sets the password and ends every session |
-| `GET /v1/account` | | `id`, `email`, `email_verified`, `created_at` |
+| `GET /v1/account` | | `id`, `email`, `email_verified` (true once a reset code has proved the person reads that inbox), `created_at` |
 | `POST /v1/account/password` | `current_password`, `new_password` | Ends every other session |
 | `GET /v1/account/sessions` | | Signed-in computers: `id`, `device`, `created_at`, `last_seen_at`, `current` |
 | `DELETE /v1/account/sessions/{id}` | | Signs that computer out (`404` if it isn't one of yours) |
@@ -76,9 +74,10 @@ All requests and responses are JSON. Errors look like `{"error": {"code": "...",
 
 - **Passwords** are hashed with Argon2id (`argon2-cffi`'s recommended settings) and rehashed on sign-in when those settings change. Wrong emails take as long to check as wrong passwords.
 - **Sessions** are 32 random bytes from `secrets`. The database keeps only an HMAC-SHA256 of each token, keyed with `TOKEN_PEPPER`, so a copy of the database alone can't be used to sign in. Sessions last 60 days and can be ended from any signed-in computer.
-- **Codes** are 6 random digits, stored the same way, valid 15 minutes, 5 wrong tries, and tied to one account and one purpose (a reset code can't confirm an email). Asking for a new code cancels the old one.
+- **Codes** are only for password reset: 6 random digits, stored the same way, valid 15 minutes, 5 wrong tries, tied to one account. Asking for a new code cancels the old one.
+- **Sign-up doesn't check the email**, by choice: it's quicker, and email is needed only to reset a password. So someone could sign up with an address that isn't theirs; that address's owner can take the account over at any time with a reset, which signs everyone else out. Sign-up says when an email already has an account (sign-in and reset never reveal it), and is limited to 20 accounts per IP address per hour.
 - **Who you are** comes only from the session token. No endpoint takes a user ID, and IDs in paths only choose among your own rows. The tests check that one person can't see, sign out or delete another.
-- **Rate limits** are kept in the database, so they hold across restarts: sign-in 10 per email and 30 per IP address per 15 minutes; emails 5 per address and 20 per IP address per hour; codes 30 per IP address per hour; password checks 10 per account per 15 minutes; sync 120 pushes and 600 pulls per account per hour.
+- **Rate limits** are kept in the database, so they hold across restarts: sign-in 10 per email and 30 per IP address per 15 minutes; sign-up 20 per IP address per hour; reset emails 5 per address and 20 per IP address per hour; codes 30 per IP address per hour; password checks 10 per account per 15 minutes; sync 120 pushes and 600 pulls per account per hour.
 - **Study room names, tasks and chat are never logged or stored**, and the server keeps no access logs (paths contain room codes).
 - **Synced course content is never logged.** Sync documents are stored as sent and only the owner's session can read them. They're encrypted in transit (HTTPS) and should be on an encrypted disk, but not end to end.
 - **Nothing secret is logged or echoed.** Validation errors name the field without repeating what was sent, there are no access logs of request bodies, and the tests check the logs for passwords, codes and tokens. Responses are marked `Cache-Control: no-store`.

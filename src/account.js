@@ -100,23 +100,14 @@ const api = {
     }
     return { configured, user: r.signedOut ? null : a.user, sync: syncAvailable, offline: r.code === 'offline' };
   },
+  // Email and password only: the new account is signed in straight away.
   async signUp({ email, password }) {
-    const r = await call('POST', '/v1/auth/register', { email: clean(email), password: secret(password) });
-    return r.ok ? { ok: true, needsCode: true } : fail(r);
-  },
-  async verify({ email, code }) {
-    const r = await call('POST', '/v1/auth/verify', { email: clean(email), code: clean(code).replace(/\s/g, ''), device: deviceName() });
+    const r = await call('POST', '/v1/auth/register', { email: clean(email), password: secret(password), device: deviceName() });
     return r.ok ? signedIn(r.data) : fail(r);
-  },
-  async resend({ email }) {
-    const r = await call('POST', '/v1/auth/resend', { email: clean(email) });
-    return r.ok ? { ok: true } : fail(r);
   },
   async signIn({ email, password }) {
     const r = await call('POST', '/v1/auth/login', { email: clean(email), password: secret(password), device: deviceName() });
-    if (r.ok) return signedIn(r.data);
-    if (r.code === 'email_not_verified') return { ok: false, needsCode: true, message: r.message };
-    return fail(r);
+    return r.ok ? signedIn(r.data) : fail(r);
   },
   async signOut() {
     const a = await readAuth();
@@ -181,7 +172,7 @@ const api = {
 
 function register(ipcMain) {
   const routes = {
-    'account:status': 'status', 'account:sign-up': 'signUp', 'account:verify': 'verify', 'account:resend': 'resend',
+    'account:status': 'status', 'account:sign-up': 'signUp',
     'account:sign-in': 'signIn', 'account:sign-out': 'signOut', 'account:reset-request': 'requestReset',
     'account:reset-complete': 'completeReset', 'account:change-password': 'changePassword', 'account:sessions': 'sessions',
     'account:revoke-session': 'revokeSession', 'account:revoke-others': 'revokeOthers', 'account:delete': 'deleteAccount',

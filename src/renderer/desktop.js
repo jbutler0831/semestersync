@@ -138,7 +138,7 @@
   adlg.className = 'settings account';
   document.body.appendChild(adlg);
   let acct = { configured: false, user: null, sync: false };
-  // Signed out: 'in', 'up', 'code' (confirm the email), 'reset1', 'reset2'. Signed in: 'me', 'password', 'devices', 'delete'.
+  // Signed out: 'in', 'up', 'reset1', 'reset2' (a code is emailed only to reset a password). Signed in: 'me', 'password', 'devices', 'delete'.
   let mode = 'in';
   let pendingEmail = '';
 
@@ -163,14 +163,7 @@
       return;
     }
     if (acct.user) { renderSignedIn(note); return; }
-    if (mode === 'code') {
-      adlg.innerHTML = `<form id="authForm"><h2>Check your email</h2>
-        <p class="hint">We sent a 6-digit code to <b>${esc(pendingEmail)}</b>. It can take a minute to arrive, so check spam too. The code works for 15 minutes.</p>
-        ${codeField}${note}
-        <p class="hint"><button type="button" class="linkish" id="resendCode">Send a new code</button></p>
-        ${actions('Confirm')}</form>`;
-      $('resendCode').onclick = async () => { const r = await d.account.resend(pendingEmail); renderAccount(r.ok ? 'Sent a new code. Use the newest email.' : r.message, !r.ok); $('authCode').focus(); };
-    } else if (mode === 'reset1') {
+    if (mode === 'reset1') {
       adlg.innerHTML = `<form id="authForm"><h2>Reset your password</h2>
         <p class="hint">Enter your account’s email. We’ll send a code you can use to choose a new password.</p>
         <section class="field"><label for="authEmail">Email</label><input type="email" id="authEmail" autocomplete="email" required></section>
@@ -192,12 +185,12 @@
         <section class="field"><label for="authEmail">Email</label><input type="email" id="authEmail" autocomplete="email" maxlength="254" required></section>
         <section class="field"><div class="label-row"><label for="authPass">Password</label>${up ? '' : '<button type="button" class="linkish" id="forgotBtn">Forgot password?</button>'}</div>
           <input type="password" id="authPass" autocomplete="${up ? 'new-password' : 'current-password'}" minlength="${up ? 8 : 1}" maxlength="128" required>
-          ${up ? PASS_HINT : ''}</section>
+          ${up ? PASS_HINT + '<p class="hint">Use an email you can open: if you forget your password, a code to reset it goes there.</p>' : ''}</section>
         ${note}${actions(up ? 'Create account' : 'Sign in')}</form>`;
       adlg.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { mode = b.dataset.m; const em = $('authEmail').value; renderAccount(); $('authEmail').value = em; $('authEmail').focus(); });
       if (!up) $('forgotBtn').onclick = () => { const em = $('authEmail').value; mode = 'reset1'; renderAccount(); $('authEmail').value = em; $('authEmail').focus(); };
     }
-    $('authCancel').onclick = () => { if (['reset1', 'reset2', 'code'].includes(mode)) { mode = 'in'; renderAccount(); if ($('authEmail')) $('authEmail').value = pendingEmail; } else adlg.close(); };
+    $('authCancel').onclick = () => { if (['reset1', 'reset2'].includes(mode)) { mode = 'in'; renderAccount(); if ($('authEmail')) $('authEmail').value = pendingEmail; } else adlg.close(); };
     $('authForm').addEventListener('submit', onAuthSubmit);
   }
   const when = iso => { const t = Date.parse(iso); if (!t) return ''; const m = Math.round((Date.now() - t) / 60000); return m < 15 ? 'active now' : m < 60 * 24 ? `active ${Math.round(m / 60) || 1} h ago` : `active ${new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`; };
@@ -260,7 +253,7 @@
   async function refreshAcct(msg, bad) {
     acct = await d.account.status();
     paintAcctBtn();
-    if (!acct.user && !['in', 'up', 'code', 'reset1', 'reset2'].includes(mode)) mode = 'in';
+    if (!acct.user && !['in', 'up', 'reset1', 'reset2'].includes(mode)) mode = 'in';
     renderAccount(msg || (!acct.user && mode === 'in' ? 'You’ve been signed out. Sign in again.' : ''), bad);
   }
   async function finishSignIn() {
@@ -315,10 +308,6 @@
     const keep = (msg, bad, ids = ['authEmail', 'authCode']) => { const v = ids.map(val); renderAccount(msg, bad); ids.forEach((id, i) => { if ($(id) && v[i]) $(id).value = v[i]; }); };
     let r;
     switch (mode) {
-      case 'code':
-        r = await d.account.verify(pendingEmail, val('authCode'));
-        if (!r.ok) { keep(r.message, true); return; }
-        await finishSignIn(); return;
       case 'reset1':
         pendingEmail = val('authEmail').trim();
         r = await d.account.requestReset(pendingEmail);
@@ -342,7 +331,7 @@
     const email = val('authEmail').trim(), password = val('authPass');
     pendingEmail = email;
     r = mode === 'up' ? await d.account.signUp(email, password) : await d.account.signIn(email, password);
-    if (r.needsCode) { mode = 'code'; renderAccount(r.ok ? '' : r.message); $('authCode').focus(); return; }
+    if (r.code === 'email_taken') { mode = 'in'; keep(r.message, true, ['authEmail']); $('authPass').focus(); return; }
     if (!r.ok) { keep(r.message, true, ['authEmail']); return; }
     await finishSignIn();
   }
@@ -351,7 +340,7 @@
     paintAcctBtn();
     if (acct.user) mode = 'me';
     else if (want === 'up') mode = 'up';
-    else if (!['in', 'up', 'code', 'reset1', 'reset2'].includes(mode)) mode = 'in';
+    else if (!['in', 'up', 'reset1', 'reset2'].includes(mode)) mode = 'in';
     renderAccount();
     if (!adlg.open) adlg.showModal();
     const em = $('authEmail'); if (em) em.focus();

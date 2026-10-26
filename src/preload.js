@@ -31,8 +31,6 @@ contextBridge.exposeInMainWorld('desktop', {
   account: {
     status: () => ipcRenderer.invoke('account:status'),
     signUp: (email, password) => ipcRenderer.invoke('account:sign-up', { email, password }),
-    verify: (email, code) => ipcRenderer.invoke('account:verify', { email, code }),
-    resend: email => ipcRenderer.invoke('account:resend', { email }),
     signIn: (email, password) => ipcRenderer.invoke('account:sign-in', { email, password }),
     signOut: () => ipcRenderer.invoke('account:sign-out'),
     requestReset: email => ipcRenderer.invoke('account:reset-request', { email }),

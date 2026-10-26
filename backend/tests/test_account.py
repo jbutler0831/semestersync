@@ -70,6 +70,7 @@ def test_delete_account_needs_the_password_and_removes_everything(client):
 def test_logs_never_contain_passwords_codes_or_tokens(client, caplog):
     caplog.set_level(logging.DEBUG)
     token = signup(client)
+    client.post("/v1/auth/password-reset/request", json={"email": "ana@example.edu"})
     code = last_code("ana@example.edu")
     client.post("/v1/auth/login", json={"email": "ana@example.edu", "password": "wrong password"})
     client.post("/v1/account/password", json={"current_password": PASSWORD, "new_password": "a new password"}, headers=auth(token))

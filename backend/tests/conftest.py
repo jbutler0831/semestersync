@@ -36,10 +36,8 @@ def last_code(to: str) -> str:
 
 
 def signup(client, email="ana@example.edu", password=PASSWORD, device="Test Mac") -> str:
-    r = client.post("/v1/auth/register", json={"email": email, "password": password})
-    assert r.status_code == 202, r.text
-    r = client.post("/v1/auth/verify", json={"email": email, "code": last_code(email), "device": device})
-    assert r.status_code == 200, r.text
+    r = client.post("/v1/auth/register", json={"email": email, "password": password, "device": device})
+    assert r.status_code == 201, r.text
     return r.json()["token"]
 
 
