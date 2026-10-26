@@ -1,23 +1,22 @@
 # SemesterSync 1.5.0: Your data, on your terms
 
-**Works fully without an account.** Everything saves on your computer first and works offline. You never have to sign up to use SemesterSync.
+**Everything works without an account.** Your courses save on your computer first and work fully offline. You never have to sign up to use SemesterSync.
 
-**Optional accounts on SemesterSync's own server**
+**What changed in 1.5.0**
 
-- Create an account with your email, confirm it with a 6-digit code, and sign in on your other computers.
-- Reset a forgotten password, change it, see which computers are signed in and sign them out, or delete the account and everything in it.
-- Passwords are protected with Argon2id and never stored. Sign-ins are encrypted with your computer's keychain.
+- **Your data stays on your computer, and it's protected:**
+  - A full copy always stays on your computer.
+  - A backup is made before any upgrade.
+  - Nothing is uploaded anywhere without your permission.
+- **New account system, coming soon.** SemesterSync now has its own account system with:
+  - Email sign-up with a 6-digit code
+  - Password reset
+  - Seeing and signing out your computers
+  - Deleting your account
 
-**Cloud sync, only if you want it**
+  Cloud sync is built in too. You choose which courses to sync, edits from different computers are combined, and you decide when the same thing changed in two places. **These switch on in an upcoming update, once SemesterSync's server is online.** Until then, **Sign in** says accounts aren't available yet, and everything else works as usual.
+- **Study rooms** move to SemesterSync's own server as well, and come back in the same update.
 
-- **Nothing is uploaded until you agree.** You pick which courses to sync, and a backup file is saved first.
-- **Each course has a switch:** Synced, or Only on this computer.
-- **Edits combine:** a score added on one computer and a due date moved on another are both kept.
-- **You decide:** when the same thing changed differently on two computers, **Needs your choice** shows both versions. Keep either one, or both. Nothing is silently overwritten.
-- **Turn sync off, or remove your data from the account, any time.** Your computer keeps everything.
-
-**Study rooms** now run on SemesterSync's own server. Still no account needed, and nothing is stored.
-
-**Coming from 1.4 with an old account?** The first time 1.5 starts, it copies your old account's courses to this computer. Then you can create a new account if you want to keep syncing.
+**Coming from 1.4 with an old account?** The first time 1.5 starts, it copies your old account's courses to this computer, after saving a backup. Nothing is lost. The old sign-in is then removed. You'll be able to create a new account when accounts switch on.
 
 **Install:** see the steps below. Updating keeps your courses and settings.
