@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [macos-15-intel, windows-latest]  # Intel Mac machines: GitHub's Apple-silicon ones are often fully booked. The installer is still universal.
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -62,7 +62,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [macos-15-intel, windows-latest]  # Intel Mac machines: GitHub's Apple-silicon ones are often fully booked. The installer is still universal.
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
