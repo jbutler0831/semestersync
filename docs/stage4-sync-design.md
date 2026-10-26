@@ -1,6 +1,6 @@
 # Stage 4: Opt-in cloud sync, design for review
 
-Status: **draft, waiting for approval.** No sync code gets written until the decisions at the end are settled.
+Status: **approved 2026-10-25** with the recommended answers to every decision below (no end-to-end encryption for now; new courses sync automatically; 90-day deletion markers; 25 MB per person; combine non-overlapping edits automatically). Built in Stage 4.
 
 ## Goals
 

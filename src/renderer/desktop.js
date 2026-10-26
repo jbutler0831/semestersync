@@ -230,8 +230,8 @@
     } else {
       mode = 'me';
       const syncText = acct.sync
-        ? (localStorage.getItem(consentKey(acct.user.id)) === '1' ? 'Cloud sync is on.' : 'Cloud sync is off: your courses are only on this computer.') + ' Manage it in <b>Your data</b>.'
-        : 'Your courses are saved on this computer. Cloud sync isn’t available yet; when it is, nothing is uploaded until you turn it on.';
+        ? (window.CloudSync && window.CloudSync.isOn() ? 'Cloud sync is on.' : 'Cloud sync is off: nothing is uploaded.') + ' Manage it in <b>Your data</b>.'
+        : 'Your courses are saved on this computer. This account server doesn’t offer cloud sync, so nothing is uploaded.';
       adlg.innerHTML = `<form method="dialog"><h2>Your account</h2>
         <div class="acct-card"><span class="avatar lg">${esc(acct.user.email[0].toUpperCase())}</span><div><b>${esc(acct.user.email)}</b><span>${acct.offline ? 'Offline: couldn’t check with the account server.' : 'Signed in'}</span></div></div>
         <p class="hint">${syncText}</p>
@@ -243,6 +243,7 @@
       for (const [id, m] of [['pwBtn', 'password'], ['devBtn', 'devices'], ['delBtn', 'delete']]) $(id).onclick = () => { mode = m; renderAccount(); const f = adlg.querySelector('input'); if (f) f.focus(); };
       $('signOutBtn').onclick = async () => {
         const wipe = $('wipeLocal').checked;
+        if (window.CloudSync) window.CloudSync.forget(acct.user.id);
         await d.account.signOut();
         try {
           localStorage.removeItem('ssync-account-cache-v1');
@@ -265,67 +266,47 @@
   async function finishSignIn() {
     try { localStorage.setItem('ssync-onboarded', '1'); } catch { /* fine */ }
     acct = await d.account.status();
-    if (acct.sync) { await askToSync(); location.reload(); return; }
+    if (acct.sync) { paintAcctBtn(); adlg.close(); await askToSync(); return; }
     // No sync yet: nothing on the page changes, so there's no need to reload.
     paintAcctBtn(); mode = 'me'; renderAccount(`Signed in as ${acct.user ? acct.user.email : ''}.`);
   }
-  const localCourses = () => {
-    let raw = [];
-    try { raw = JSON.parse(localStorage.getItem('ssync-courses-v1') || '[]'); } catch { /* nothing saved locally */ }
-    return raw.map(json => { try { return { json, c: JSON.parse(json) }; } catch { return null; } }).filter(Boolean);
-  };
-  // Nothing is uploaded without asking. After signing in (or from Your data), this shows what would happen
-  // and lets the person choose; "Not now" keeps everything on this computer with sync off.
-  const consentKey = uid => 'ssync-sync-consent-' + uid;
-  function chooseSync(info) {
-    const { mine, accountCount, email } = info;
-    const list = mine.slice(0, 8).map(x => esc(x.c.code)).join(', ');
-    let body, buttons;
-    if (accountCount && mine.length) {
-      body = `<p class="hint">Your account already has ${accountCount} course${accountCount === 1 ? '' : 's'}. This computer has ${mine.length} of its own: <b>${list}</b>.</p>
-        <p class="hint"><b>Add mine to the account</b> uploads this computer's courses next to the ones already there. <b>Use the account's courses</b> shows only the account's here; this computer's are kept in a backup first. <b>Not now</b> keeps everything on this computer and uploads nothing.</p>`;
-      buttons = `<button type="button" class="btn" data-sc="no">Not now</button><button type="button" class="btn" data-sc="use">Use the account's courses</button><button type="button" class="btn primary" data-sc="add">Add mine to the account</button>`;
-    } else if (accountCount) {
-      body = `<p class="hint">Your account has ${accountCount} course${accountCount === 1 ? '' : 's'}. Turning on sync shows them here and keeps this computer and the account up to date with each other. A complete copy always stays on this computer.</p>`;
-      buttons = `<button type="button" class="btn" data-sc="no">Not now</button><button type="button" class="btn primary" data-sc="use">Turn on sync</button>`;
-    } else if (mine.length) {
-      body = `<p class="hint">Upload this computer's ${mine.length} course${mine.length === 1 ? '' : 's'} (<b>${list}</b>), with their deliverables, scores, notes, syllabus text, study sets and settings, to ${esc(email)}? Then any computer you sign in on can show them.</p>
-        <p class="hint">Only you can see your account's data. <b>Not now</b> keeps everything on this computer and uploads nothing; you can turn sync on later in <b>Your data</b>.</p>`;
-      buttons = `<button type="button" class="btn" data-sc="no">Not now</button><button type="button" class="btn primary" data-sc="add">Upload and turn on sync</button>`;
-    } else {
-      body = `<p class="hint">Turn on sync to keep your courses in your account as you add them, so any computer you sign in on can show them. A complete copy always stays on this computer.</p>`;
-      buttons = `<button type="button" class="btn" data-sc="no">Not now</button><button type="button" class="btn primary" data-sc="use">Turn on sync</button>`;
-    }
-    return new Promise(resolve => {
-      adlg.innerHTML = `<form method="dialog"><h2>Cloud sync</h2>${body}<div class="actions"><span style="flex:1"></span>${buttons}</div></form>`;
-      adlg.querySelectorAll('[data-sc]').forEach(b => b.onclick = () => resolve(b.dataset.sc));
-      if (!adlg.open) adlg.showModal();
-    });
-  }
+  // Nothing is uploaded without asking. After signing in (or from Your data), this lists what would go and
+  // what's already in the account; unticked courses stay only on this computer. "Not now" uploads nothing.
+  const sdlg = document.createElement('dialog');
+  sdlg.className = 'settings sync-choose';
+  document.body.appendChild(sdlg);
   async function askToSync() {
     const s = await d.account.status();
-    if (!s.user) return;
-    const listed = await d.cloud.list();
-    if (!listed.ok) { toast('Couldn’t reach your account. Sync stays off for now; turn it on later from Your data.'); return; }
-    const mine = localCourses().filter(x => !x.c.sample && !x.c.inbox);
-    const accountCourses = listed.docs.filter(x => String(x.id).startsWith('course-') && x.id !== 'course-inbox');
-    const choice = await chooseSync({ mine, accountCount: accountCourses.length, email: s.user.email });
-    if (choice === 'no') return;
-    if (choice === 'add') {
-      // Upload this computer's own courses (never samples), and its Inbox, settings and study sets where the account has none.
-      const at = Date.now(), have = new Set(listed.docs.map(x => x.id));
-      if (!have.has('meta')) await d.cloud.set('meta', { v: 1 });
-      for (const x of localCourses()) {
-        const id = 'course-' + x.c.id;
-        if (!x.c.sample && !have.has(id)) await d.cloud.set(id, { json: x.json, at });
-      }
-      let extras = [];
-      try { extras = JSON.parse(localStorage.getItem('ssync-extras-v1') || '[]'); } catch { /* nothing saved locally */ }
-      for (const [id, json] of extras) if ((id === 'extras' || String(id).startsWith('deck-')) && !have.has(id)) await d.cloud.set(id, { json, at });
-    }
-    // Both choices turn sync on. When the account's courses load, the page keeps a safety copy of this computer's first.
-    localStorage.setItem(consentKey(s.user.id), '1');
-    localStorage.removeItem('ssync-account-cache-v1');
+    if (!s.user || !s.sync || !window.CloudSync) return;
+    if (window.CloudSync.isOn()) { toast('Cloud sync is already on.'); return; }
+    const remote = await window.CloudSync.accountDocs().catch(() => null);
+    if (!remote) { toast('Couldn’t reach your account. Sync stays off for now; turn it on later from Your data.'); return; }
+    const mine = window.SSyncPage.state.courses.filter(c => !c.sample);
+    const there = new Map(remote.filter(x => x.doc_id.startsWith('course-') && x.doc_id !== 'course-inbox').map(x => { let code = 'A course'; try { code = JSON.parse(x.body).code || code; } catch { /* unreadable */ } return [x.doc_id.slice(7), code]; }));
+    const onlyThere = [...there].filter(([id]) => !mine.some(c => c.id === id)).map(([, code]) => code);
+    const rows = mine.map(c => `<label class="toggle-row" style="justify-content:flex-start;gap:10px"><input type="checkbox" data-cid="${esc(c.id)}" checked><span><b>${esc(c.code)}</b>${c.title ? ' · ' + esc(c.title) : ''}${there.has(c.id) ? ' <small>(also in your account; the two are combined)</small>' : ''}</span></label>`).join('');
+    sdlg.innerHTML = `<form method="dialog"><h2>Cloud sync</h2>
+      <p class="hint">Choose what to keep in <b>${esc(s.user.email)}</b>. Each course goes with its deliverables, scores, notes, syllabus text and study sets. Only you can see your account’s data. A complete copy always stays on this computer.</p>
+      ${mine.length ? `<div class="sync-list">${rows}</div>` : '<p class="hint">This computer has no courses of its own yet.</p>'}
+      <label class="toggle-row" style="justify-content:flex-start;gap:10px"><input type="checkbox" id="syncSettings" checked><span><b>Settings, Inbox and study history</b> <small>reminders, planner hours, GPA inputs, focus history</small></span></label>
+      ${onlyThere.length ? `<p class="hint">Your account also has ${onlyThere.length} course${onlyThere.length === 1 ? '' : 's'} that aren’t on this computer: <b>${esc(onlyThere.slice(0, 8).join(', '))}</b>. ${onlyThere.length === 1 ? 'It’s' : 'They’re'} added here.</p>` : ''}
+      <p class="hint">If the same course changed here and in the account in a way that can’t be combined, you choose which to keep. You can change all of this later: each course has a sync switch, and <b>Your data</b> turns sync off.</p>
+      <p class="msg bad" id="syncMsg" hidden></p>
+      <div class="actions"><span style="flex:1"></span><button type="button" class="btn" data-sc="no">Not now</button><button type="button" class="btn primary" data-sc="yes">${mine.length ? 'Upload and turn on sync' : 'Turn on sync'}</button></div></form>`;
+    const choice = await new Promise(resolve => {
+      sdlg.querySelectorAll('[data-sc]').forEach(b => b.onclick = () => resolve(b.dataset.sc));
+      sdlg.addEventListener('cancel', () => resolve('no'), { once: true });
+      sdlg.showModal();
+    });
+    if (choice !== 'yes') { sdlg.close(); return; }
+    const off = [...sdlg.querySelectorAll('[data-cid]')].filter(x => !x.checked).map(x => x.dataset.cid);
+    const settings = sdlg.querySelector('#syncSettings').checked;
+    // A copy of everything on this computer, before the first sync touches it.
+    const backup = await d.backup.write('before-first-sync', JSON.stringify(window.SSyncPage.backupData())).catch(() => null);
+    if (!backup || !backup.ok) { const m = sdlg.querySelector('#syncMsg'); m.textContent = 'Couldn’t save a backup first, so nothing was changed. Check there’s free disk space and try again.'; m.hidden = false; return; }
+    sdlg.close();
+    await window.CloudSync.enable({ off, settings });
+    toast(window.CloudSync.isOn() ? 'Cloud sync is on' : 'Couldn’t turn on sync');
   }
   async function onAuthSubmit(e) {
     e.preventDefault();
@@ -354,6 +335,7 @@
       case 'delete':
         r = await d.account.deleteAccount(val('authPass'));
         if (!r.ok) { if (r.code === 'unauthorized') { await refreshAcct(); return; } renderAccount(r.message, true); return; }
+        if (window.CloudSync) window.CloudSync.forget(acct.user.id);
         try { for (const k of Object.keys(localStorage)) if (k.startsWith('ssync-sync-consent-')) localStorage.removeItem(k); localStorage.removeItem('ssync-account-cache-v1'); } catch { /* nothing to remove */ }
         mode = 'in'; await refreshAcct('Your account was deleted. Your courses are still on this computer.'); paintAcctBtn(); return;
     }
@@ -392,7 +374,7 @@
   document.addEventListener('ssync:open', async e => {
     if (e.detail === 'settings') openSettings();
     else if (e.detail === 'account') openAccount('up');
-    else if (e.detail === 'sync') { acct = await d.account.status(); if (!acct.user) { openAccount(); return; } if (!acct.sync) { toast('Cloud sync isn’t available yet.'); return; } await askToSync(); location.reload(); }
+    else if (e.detail === 'sync') { acct = await d.account.status(); if (!acct.user) { openAccount(); return; } if (!acct.sync) { toast('Cloud sync isn’t available on this account server.'); return; } await askToSync(); }
   });
 
   // Reminders moved to the page (Today tab). Someone who turned them off in 1.2 keeps them off.

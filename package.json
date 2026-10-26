@@ -12,10 +12,11 @@
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
     "dist": "electron-builder --mac --win",
-    "test": "node test/static.test.js && node test/taskparse.test.js && electron test/e2e.js",
+    "test": "node test/static.test.js && node test/taskparse.test.js && node test/merge.test.js && electron test/e2e.js",
     "test:parse": "node test/taskparse.test.js",
     "test:accounts": "electron test/accounts.e2e.js",
-    "test:backend": "backend/scripts/test.sh"
+    "test:backend": "backend/scripts/test.sh",
+    "test:sync": "electron test/sync.e2e.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.132.0",

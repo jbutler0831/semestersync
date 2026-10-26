@@ -54,6 +54,14 @@ app.on('browser-window-created', (_e, win) => {
   const click = sel => js(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return false; el.click(); return true; })()`);
   const waitText = (re, ms) => until(`(() => { const t = (document.querySelector('dialog.account[open]') || {}).innerText || ''; return ${re}.test(t) && t; })()`, ms);
   const tokenFile = path.join(TMP, 'profile', 'account.bin');
+  // After signing in, the app asks about cloud sync. These tests answer "Not now" (sync has its own test) and reopen the account.
+  const notNow = async () => {
+    const asked = await until(`document.querySelector('dialog.sync-choose[open]') && document.querySelector('dialog.sync-choose').innerText`);
+    if (!asked) return false;
+    await click('dialog.sync-choose [data-sc="no"]'); await sleep(200);
+    await click('#accountBtn'); await sleep(300);
+    return asked;
+  };
 
   win.webContents.once('did-finish-load', async () => {
     try {
@@ -85,10 +93,12 @@ app.on('browser-window-created', (_e, win) => {
       await fill({ authCode: code1 });
       if (code1 !== code2) check('the older code no longer works', !!(await waitText(/isn’t right|isn't right/)), await dlg());
       await fill({ authCode: ' ' + code2 + ' ' });
+      const asked = await notNow();
+      check('after signing in it asks about cloud sync, uploading nothing unless you agree', /Upload and turn on sync|Turn on sync/.test(asked || '') && /Not now/.test(asked || ''), asked);
       check('the newest code signs you in', !!(await waitText(/Your account[\s\S]*student@example\.edu/)), await dlg());
       check('the top bar shows the account', /student@example\.edu/.test(await js(`document.getElementById('accountBtn').innerText`)));
       check('signing in doesn’t change the courses on this computer', (await js(`document.getElementById('coursebar').innerText`)) === coursesBefore);
-      check('it says sync isn’t available yet and nothing is uploaded', /Cloud sync isn’t available yet/.test(await dlg()), await dlg());
+      check('with sync declined, it says nothing is uploaded', /Cloud sync is off: nothing is uploaded/.test(await dlg()), await dlg());
       const saved = fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile) : null;
       check('the session is saved encrypted, not as readable text', saved && !/student@example|token/.test(saved.toString('latin1')));
 
@@ -133,6 +143,7 @@ app.on('browser-window-created', (_e, win) => {
       const reset = await codeFor('student@example.edu', 3);
       check('a reset code is emailed', !!reset && /Reset/.test(mail[2].subject), mail[2]);
       await fill({ authCode: reset, authPass: 'third password 3' });
+      await notNow();
       check('resetting the password signs you in', !!(await waitText(/Your account[\s\S]*student@example\.edu/)), await dlg());
 
       console.log('\n# A session ended elsewhere');
@@ -151,6 +162,7 @@ app.on('browser-window-created', (_e, win) => {
       await fill({ authEmail: 'second@example.edu', authPass: 'another password' });
       check('signing in before confirming goes to the code screen', !!(await waitText(/Check your email[\s\S]*Confirm your email first/)), await dlg());
       await fill({ authCode: await codeFor('second@example.edu', 1) });
+      await notNow();
       check('and the code finishes it', !!(await waitText(/Your account[\s\S]*second@example\.edu/)), await dlg());
 
       console.log('\n# Delete account');

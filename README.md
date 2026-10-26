@@ -60,9 +60,13 @@ npm run test:backend    # the account server's tests (needs PostgreSQL 17; see b
 npm run test:accounts   # the real app against the real account server on a throwaway database
 ```
 
-`npm test` runs the real app on a throwaway profile with a fake Claude API and a fake account server (a duplicate-function check, 23 parser checks, then 185 app checks, about 3 minutes). Nothing touches your data or your Claude key. It covers first launch, the Today view and reminders (intervals, morning summary, overdue and high-priority warnings, quiet hours, pausing, no repeats, the tray summary), syllabus review, calendar export, backup and restore, damaged data, upgrading data from earlier versions, copying an old account's courses to the computer, the planner, search and shortcuts, and the sync code that will be used in a later stage. The GitHub workflow runs it on macOS and Windows for every push and before any release.
+```bash
+npm run test:sync       # two app windows syncing through the real account server
+```
 
-`npm run test:backend` starts a temporary PostgreSQL cluster in a temp folder and runs the server's tests (24 checks: sign-up codes, sign-in, sessions, password reset, rate limits, one person never reaching another's account, nothing secret in logs or responses). `npm run test:accounts` starts the server the same way and drives the app's real account dialog against it (36 checks).
+`npm test` runs the real app on a throwaway profile with a fake Claude API and a fake account server (a duplicate-function check, 23 parser checks, 16 merge checks, then 198 app checks, about 3 minutes). Nothing touches your data or your Claude key. It covers first launch, the Today view and reminders (intervals, morning summary, overdue and high-priority warnings, quiet hours, pausing, no repeats, the tray summary), syllabus review, calendar export, backup and restore, damaged data, upgrading data from earlier versions, copying an old account's courses to the computer, the planner, search and shortcuts, and cloud sync: asking first, per-course choices, changes flowing both ways, combining edits, each **Needs your choice** button, offline, removing courses and removing data from the account. The GitHub workflow runs it on macOS and Windows for every push and before any release.
+
+`npm run test:backend` starts a temporary PostgreSQL cluster in a temp folder and runs the server's tests (38 checks: sign-up codes, sign-in, sessions, password reset, rate limits, sync versions and conflicts, deletion markers, limits, one person never reaching another's account or documents, nothing secret in logs or responses). `npm run test:accounts` starts the server the same way and drives the app's real account dialog against it (37 checks); `npm run test:sync` has two app windows sync through it, including both saving at the same moment (21 checks).
 
 ## Backups and safety
 
@@ -93,11 +97,22 @@ Accounts are optional. SemesterSync opens straight into the app, every feature w
 - **Sign in / Sign out.** Signing out keeps the courses on the computer. On a shared computer, tick **Also remove my courses, settings and backups from this computer**.
 - **Forgot password?** emails a 6-digit code; type it with a new password. Every computer signed in to the account is signed out.
 - **Your account:** change password (signs out the other computers), see **Signed-in computers** and sign any of them out, and **Delete account** (asks for the password; deletes the account at once, and leaves the courses on the computer).
-- **Cloud sync isn't available yet.** Signing in uploads nothing. Sync comes in a later stage, and it will ask before the first upload. The page's sync code (consent, merging, offline retries) stays in place and is tested against a fake server, but the real server doesn't offer sync, so it never runs.
 - **Where the session lives:** the main process (`src/account.js`) talks to the API; the page never sees the session token. The token is encrypted with the system keychain (`safeStorage`) in `account.bin` in the app's data folder; without a keychain it's kept in memory until the app quits.
 - **Server address:** `SEMESTERSYNC_API_URL`, or `apiUrl` in `src/config.json`. Installed builds only accept `https://` addresses; `http://localhost` works only when running from source. While it's empty, the account dialog says accounts aren't available and everything else works as usual.
 
 To run the server locally, see [`backend/README.md`](backend/README.md).
+
+### Cloud sync (optional)
+
+- **Nothing is uploaded until you agree.** After signing in (or from **Your data → Turn on cloud sync…**), a checklist shows every course on the computer, plus **Settings, Inbox and study history**, and what's already in the account. Untick anything you want to keep only on this computer. **Not now** uploads nothing. A backup file (`SemesterSync-before-first-sync-….json`) is saved before the first sync.
+- **This computer stays the main copy.** Everything saves here first and works offline; the status says **Offline** and syncs by itself when the connection is back.
+- **Each course has a switch** next to **Remove course**: **Synced** or **Only on this computer**. Turning it off asks whether to remove the course from the account (other computers keep a safety copy) or leave the account's copy as it is. New courses sync automatically while sync is on.
+- **When two computers change the same course,** the changes are combined deliverable by deliverable and field by field: a score added on one and a due date moved on the other both stay. Settings and study history are always combined. Only when the same thing was changed differently on both (or deleted on one and edited on the other) does it go to **Your data → Needs your choice**, which shows both versions and where the other came from: **Keep this computer's**, **Keep the other**, or **Keep both** (the other becomes a second course). Until then this computer keeps its own version, everything else keeps syncing, and the version not kept goes to Safety copies.
+- **Two computers saving at the same moment can't overwrite each other:** each change says which version it was based on, and the server refuses one that didn't see the latest copy. The app then combines and tries again.
+- **Removing courses:** a course removed on one computer is removed on the others, which keep a safety copy first.
+- **Turn off cloud sync** (in **Your data**) keeps everything on the computer. **Remove my data from the account…** (password required) deletes everything synced from the server and turns sync off on every computer; the account stays.
+- **Limits:** 25 MB and 300 documents per account, 1 MB per course. Original syllabus files (PDFs) aren't synced.
+- **Not encrypted end to end:** the data is encrypted in transit (HTTPS) and on the server's disk, but the server could read it. That keeps password reset from losing data; end-to-end encryption can be added later.
 
 **Old accounts (Supabase, versions 1.0 to 1.4).** The first time this version starts on a computer that was signed in to an old account, it copies that account's courses to the computer:
 
@@ -136,7 +151,7 @@ After adding them, set the repository variable `REQUIRE_SIGNED` to `1` so a rele
 | Path | What it does |
 |---|---|
 | `src/main.js` | Window, menus, Claude API calls, settings, saving files, daily backups, original syllabus files |
-| `src/account.js` | Accounts: talks to SemesterSync's own API; keeps the session token |
+| `src/account.js` | Accounts and sync requests to SemesterSync's own API; keeps the session token |
 | `src/legacy.js` | Study rooms (Supabase Realtime, for now) and the one-time copy of old Supabase accounts |
 | `src/config.json` | The account server address (`apiUrl`), and the Supabase project used by study rooms |
 | `backend/` | The account server (FastAPI + PostgreSQL); see `backend/README.md` |
@@ -144,13 +159,15 @@ After adding them, set the repository variable `REQUIRE_SIGNED` to `1` so a rele
 | `src/preload.js` | The only bridge between the page and the main process (context isolation on, no Node in the page) |
 | `src/renderer/index.html`, `app.js` | The app UI |
 | `src/renderer/bridge.js` | Connects the UI's Claude calls to the main process |
-| `src/renderer/desktop.js` | Settings and account dialogs, menu shortcuts |
+| `src/renderer/desktop.js` | Settings, account and cloud sync dialogs, menu shortcuts |
+| `src/renderer/cloudsync.js` | Cloud sync with the account server: versions, Needs your choice, the per-course switch |
+| `src/renderer/merge.js` | Combines two edited copies of a course, study set or settings (`test/merge.test.js`) |
 | `src/assets/` | Menu-bar and tray icons |
 | `src/renderer/taskparse.js` | Reads a task typed in plain English (runs on the device; no API) |
 | `src/renderer/quickadd.html`, `quickadd.js` | The Quick Add window |
 | `test/taskparse.test.js` | Parser unit tests (`npm run test:parse`) |
 | `test/e2e.js`, `test/fake-claude.js` | The regression tests (`npm test` runs both) |
-| `test/accounts.e2e.js` | The app against the real account server (`npm run test:accounts`) |
+| `test/accounts.e2e.js`, `test/sync.e2e.js` | The app against the real account server (`npm run test:accounts`, `npm run test:sync`) |
 | `scripts/verify-installer.sh` | Checks a built installer installs and starts |
 | `build/icon.png` | App icon (electron-builder converts it to .icns and .ico) |
 

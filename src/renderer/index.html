@@ -444,6 +444,14 @@ dialog.account .spinner { width: 16px; height: 16px; border-radius: 50%; border:
 .avatar.lg { width: 40px; height: 40px; font-size: 18px; }
 .acct-card { display: flex; gap: 12px; align-items: center; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
 .acct-card b { display: block; overflow-wrap: anywhere; }
+.sync-list { display: grid; gap: 4px; max-height: 240px; overflow: auto; }
+.needs { border: 1px solid var(--warn, #b7791f); border-radius: 10px; padding: 10px 12px; margin: 8px 0; display: grid; gap: 8px; }
+.needs h4 { margin: 0; font-size: 13px; }
+.conflict { border-top: 1px solid var(--line); padding-top: 8px; display: grid; gap: 4px; }
+.conflict:first-of-type { border-top: 0; }
+.conflict small { color: var(--muted); }
+.conflict ul { margin: 2px 0 4px; padding-left: 18px; font-size: 12.5px; }
+.save-status.warn { cursor: default; }
 .dev-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .dev-list li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
 .dev-list li > div { flex: 1; min-width: 0; }
@@ -1555,6 +1563,8 @@ dialog.settings .key-in:focus { outline: none; border-color: var(--accent); box-
 <script src="bridge.js"></script>
 <script src="taskparse.js"></script>
 <script src="app.js"></script>
+<script src="merge.js"></script>
+<script src="cloudsync.js"></script>
 <script src="desktop.js"></script>
 </body>
 </html>

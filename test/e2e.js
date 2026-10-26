@@ -38,22 +38,44 @@ require('../src/main.js');
 let traySummary = null;
 ipcMain.on('tray:update', (_e, s) => { traySummary = s; });
 
-/* ---------- Fake account server: one shared cloud, a signed-in flag per window ---------- */
-const cloud = new Map(); // doc id -> body
+/* ---------- Fake account server: one account, a signed-in flag per window, versioned sync like backend/ ---------- */
 let cloudDown = false;
 const users = new Map(); // webContents id -> user or null
+const devices = new Map(); // webContents id -> device name
 const USER = { id: 'user-1', email: 'student@example.com' };
 const who = e => users.get(e.sender.id) || null;
-// Sync isn't offered by the real account server yet (Stage 4); these tests keep the page's sync code working for when it is.
-for (const ch of ['account:status', 'account:sign-in', 'account:sign-up', 'account:sign-out', 'cloud:list', 'cloud:set', 'cloud:delete', 'legacy:status', 'legacy:export', 'legacy:forget']) ipcMain.removeHandler(ch);
+const server = { seq: 0, epoch: 1, docs: new Map() }; // doc id -> { version, seq, deleted, body, device, updated_at }
+const live = () => [...server.docs].filter(([, d]) => !d.deleted);
+const courseDocs = () => live().filter(([k]) => k.startsWith('course-') && k !== 'course-inbox').map(([k]) => k);
+const bodyOf = id => { const d = server.docs.get(id); return d && !d.deleted ? JSON.parse(d.body) : null; };
+for (const ch of ['account:status', 'account:sign-in', 'account:sign-up', 'account:sign-out', 'sync:changes', 'sync:push', 'sync:usage', 'sync:clear', 'legacy:status', 'legacy:export', 'legacy:forget']) ipcMain.removeHandler(ch);
 ipcMain.handle('account:status', e => ({ configured: true, user: who(e), sync: true }));
 ipcMain.handle('account:sign-in', e => { users.set(e.sender.id, USER); return { ok: true, user: USER }; });
 ipcMain.handle('account:sign-up', e => { users.set(e.sender.id, USER); return { ok: true, user: USER }; });
 ipcMain.handle('account:sign-out', e => { users.set(e.sender.id, null); return { ok: true }; });
-const down = () => ({ ok: false, message: 'Couldn\'t reach the account server. Check your internet connection.' });
-ipcMain.handle('cloud:list', e => { if (!who(e)) return { ok: false, message: 'Not signed in' }; if (cloudDown) return down(); return { ok: true, docs: [...cloud].map(([id, body]) => ({ id, body: JSON.parse(JSON.stringify(body)) })) }; });
-ipcMain.handle('cloud:set', (e, { id, body }) => { if (!who(e)) return { ok: false }; if (cloudDown) return down(); cloud.set(id, JSON.parse(JSON.stringify(body))); return { ok: true }; });
-ipcMain.handle('cloud:delete', (e, { id }) => { if (!who(e)) return { ok: false }; if (cloudDown) return down(); cloud.delete(id); return { ok: true }; });
+const down = () => ({ ok: false, code: 'offline', message: 'Couldn’t reach the SemesterSync account server.' });
+const gate = e => (!who(e) ? { ok: false, code: 'unauthorized', signedOut: true, message: 'Sign in first.' } : cloudDown ? down() : null);
+const out = (id, d) => ({ doc_id: id, version: d.version, seq: d.seq, deleted: d.deleted, body: d.deleted ? null : d.body, device: d.device, updated_at: d.updated_at });
+ipcMain.handle('sync:changes', (e, { since }) => {
+  const g = gate(e); if (g) return g;
+  const rows = [...server.docs].filter(([, d]) => d.seq > since).sort((x, y) => x[1].seq - y[1].seq);
+  const page = rows.slice(0, 100);
+  return { ok: true, docs: page.map(([id, d]) => out(id, d)), cursor: page.length ? page[page.length - 1][1].seq : Math.min(since, server.seq), more: rows.length > 100, epoch: server.epoch, reset: false };
+});
+ipcMain.handle('sync:push', (e, { changes }) => {
+  const g = gate(e); if (g) return g;
+  const results = changes.map(c => {
+    const d = server.docs.get(c.doc_id), have = d ? d.version : 0;
+    if (c.base_version !== have) return { doc_id: c.doc_id, status: 'conflict', server: d ? out(c.doc_id, d) : { doc_id: c.doc_id, version: 0, deleted: true, body: null } };
+    if (c.deleted && !d) return { doc_id: c.doc_id, status: 'ok', version: 0 };
+    server.seq++;
+    server.docs.set(c.doc_id, { version: have + 1, seq: server.seq, deleted: !!c.deleted, body: c.deleted ? null : c.body, device: devices.get(e.sender.id) || 'Mac', updated_at: new Date().toISOString() });
+    return { doc_id: c.doc_id, status: 'ok', version: have + 1, seq: server.seq };
+  });
+  return { ok: true, results, epoch: server.epoch };
+});
+ipcMain.handle('sync:usage', e => (gate(e) || { ok: true, docs: live().length, bytes: live().reduce((n, [, d]) => n + d.body.length, 0), max_docs: 300, max_bytes: 25 * 1048576 }));
+ipcMain.handle('sync:clear', (e, { password }) => { const g = gate(e); if (g) return g; if (password !== 'correct horse') return { ok: false, message: 'That password isn’t right.' }; server.docs.clear(); server.epoch++; return { ok: true }; });
 
 /* ---------- Fake old (Supabase) account, per window ---------- */
 const oldAccounts = new Map(); // webContents id -> { email, docs, down, forgot }
@@ -651,137 +673,191 @@ async function phaseOldAccount(A) {
 }
 
 async function phaseSync(A) {
+  const waitFor = async (fn, ms = 15000) => { const t = Date.now(); while (Date.now() - t < ms) { try { if (await fn()) return true; } catch (_) {} await sleep(150); } return false; };
+  const syncNow = D => D.js(`window.CloudSync.syncNow().then(() => true)`);
+  const status = D => D.saveStatus();
+  const chooser = D => D.until(`document.querySelector('dialog.sync-choose[open]') && document.querySelector('dialog.sync-choose').innerText`);
+  const courses = D => D.js(`[...document.querySelectorAll('#coursebar [data-view]')].slice(1).map(b => b.textContent.replace(/\\d+$/, ''))`);
+  const open = (D, n) => D.js(`document.querySelectorAll('#coursebar [data-view]')[${n}].click(), true`);
+  const titleOf = (D, n) => D.js(`document.querySelectorAll('#rows tr[data-id] [data-k="title"]')[${n}].value`);
+  const setTitle = (D, n, v) => D.js(`(() => { const i = document.querySelectorAll('#rows tr[data-id] [data-k="title"]')[${n}]; i.value = ${JSON.stringify(v)}; i.dispatchEvent(new Event('change', { bubbles: true })); i.blur(); return true; })()`);
+  const signIn = async D => { await D.click('#accountBtn'); await sleep(200); await D.js(`(() => { document.getElementById('authEmail').value = 'student@example.com'; document.getElementById('authPass').value = 'correct horse'; document.getElementById('authForm').requestSubmit(); })()`); };
+  devices.set(A.win.webContents.id, 'Mac A');
+
   console.log('\n# Signing in never uploads without asking');
-  const mine = await A.js(`[...document.querySelectorAll('#coursebar [data-view]')].slice(1).map(b => b.textContent.replace(/\\d+$/, ''))`);
-  const courseDocs = () => [...cloud.keys()].filter(k => k.startsWith('course-') && k !== 'course-inbox');
-  const syncDialog = D => D.until(`document.querySelector('dialog.account[open]') && /Cloud sync/.test(document.querySelector('dialog.account').innerText) && document.querySelector('dialog.account').innerText`);
-  await A.click('#accountBtn'); await sleep(200);
-  await A.js(`(() => { document.getElementById('authEmail').value = 'student@example.com'; document.getElementById('authPass').value = 'correct horse'; document.getElementById('authForm').requestSubmit(); })()`);
-  const ask = await syncDialog(A);
-  check('after signing in, it asks before uploading, and lists what would go', /Upload this computer’s|Upload this computer's/.test(ask) && /BIO 150/.test(ask), ask);
-  let p0 = A.loaded(); await A.click('[data-sc="no"]'); await p0; await A.until(`!!document.querySelector('#coursebar [data-view]')`); await sleep(1500);
-  check('“Not now” uploads nothing', cloud.size === 0, [...cloud.keys()]);
-  check('and everything stays on this computer, with sync shown as off', (await A.js(`[...document.querySelectorAll('#coursebar [data-view]')].length - 1`)) === mine.length && /sync off/.test(await A.saveStatus()), await A.saveStatus());
-  await A.js(`document.dispatchEvent(new CustomEvent('ssync:data', { detail: 'data' }))`); await sleep(200);
-  await A.click('#syncOnBtn');
-  await syncDialog(A);
-  p0 = A.loaded(); await A.click('[data-sc="add"]'); await p0; await A.until(`!!document.querySelector('#coursebar [data-view]')`); await sleep(1500);
-  check('turning sync on later uploads every course', courseDocs().length === mine.length, { cloud: [...cloud.keys()], mine });
-  check('the page now saves to the account', /account/.test(await A.saveStatus()), await A.saveStatus());
+  const mine = await courses(A);
+  await signIn(A);
+  const ask = await chooser(A);
+  check('after signing in, it asks before uploading, listing each course', /Upload and turn on sync/.test(ask) && mine.every(c => ask.includes(c.trim())), ask);
+  check('it says what each course includes', /deliverables, scores, notes, syllabus text and study sets/.test(ask));
+  await A.click('dialog.sync-choose [data-sc="no"]'); await sleep(1500);
+  check('“Not now” uploads nothing', server.docs.size === 0, [...server.docs.keys()]);
+  check('and nothing says it’s synced', !/Synced/.test(await status(A)), await status(A));
+  await A.js(`document.dispatchEvent(new CustomEvent('ssync:data', { detail: 'data' }))`);
+  await A.until(`!!document.getElementById('csOn')`);
+  check('Your data offers to turn sync on', await A.click('#csOn'));
+  await chooser(A);
+  const lastCid = await A.js(`[...document.querySelectorAll('dialog.sync-choose [data-cid]')].pop().dataset.cid`);
+  const lastName = await A.js(`[...document.querySelectorAll('#coursebar [data-view]')].pop().textContent.replace(/\\d+$/, '')`);
+  await A.js(`[...document.querySelectorAll('dialog.sync-choose [data-cid]')].pop().checked = false`);
+  const backupsBefore = fs.readdirSync(path.join(TMP, 'profile', 'Backups')).filter(n => /before-first-sync/.test(n)).length;
+  await A.click('dialog.sync-choose [data-sc="yes"]');
+  await waitFor(() => courseDocs().length === mine.length - 1);
+  check('turning sync on uploads the ticked courses', courseDocs().length === mine.length - 1, courseDocs());
+  check('an unticked course isn’t uploaded', !server.docs.has('course-' + lastCid));
+  check('settings and study history go too', !!bodyOf('extras'));
+  check('samples are never uploaded', !live().some(([, d]) => /"sample":true/.test(d.body)));
+  check('a backup file is saved before the first sync', fs.readdirSync(path.join(TMP, 'profile', 'Backups')).filter(n => /before-first-sync/.test(n)).length === backupsBefore + 1);
+  check('the page now says it’s synced', !!(await A.until(`/Synced to your account/.test(document.getElementById('saveStatus').textContent)`)), await status(A));
+  await A.js(`document.querySelector('dialog.data-dlg').close()`);
+  const lastIdx = mine.length; // coursebar index of the unticked (last) course
+  await open(A, lastIdx); await sleep(200);
+  check('the unticked course says it’s only on this computer', /Only on this computer/.test(await A.js(`document.getElementById('courseSync').textContent`)));
+  await A.click('#courseSync'); await A.until(`document.querySelector('dialog.course-sync[open]')`);
+  await A.click('dialog.course-sync [data-cs="on"]');
+  await waitFor(() => server.docs.has('course-' + lastCid));
+  check('its switch uploads it later', !!bodyOf('course-' + lastCid) && /Synced/.test(await A.js(`document.getElementById('courseSync').textContent`)));
 
   console.log('\n# A second computer');
   const B = await newWindow('persist:device-b');
+  devices.set(B.win.webContents.id, 'Windows PC');
   users.set(B.win.webContents.id, USER);
   await B.reload();
-  check('a newly signed-in computer doesn’t sync until asked', /sync off/.test(await B.saveStatus()), await B.saveStatus());
+  check('a newly signed-in computer doesn’t sync until asked', !/Synced/.test(await status(B)) && courseDocs().length === mine.length);
   await B.js(`document.querySelector('dialog.onboard')?.close(); document.dispatchEvent(new CustomEvent('ssync:open', { detail: 'sync' }))`);
-  check('it offers to turn sync on', /Your account has \d+ course/.test(await syncDialog(B)));
-  { const p = B.loaded(); await B.click('[data-sc="use"]'); await p; await B.until(`!!document.querySelector('#coursebar [data-view]')`); await sleep(1500); }
-  const bCourses = await B.js(`[...document.querySelectorAll('#coursebar [data-view]')].length - 1`);
-  check('signs in and sees the same courses', bCourses === mine.length, bCourses);
-  check('doesn’t show onboarding to a returning account', !(await B.js(`!!document.querySelector('dialog.onboard[open]')`)));
+  const askB = await chooser(B);
+  check('it says what the account already has', new RegExp(`account also has ${mine.length} course`).test(askB), askB);
+  await B.click('dialog.sync-choose [data-sc="yes"]');
+  await B.until(`/Synced/.test(document.getElementById('saveStatus').textContent)`);
+  const bCourses = await courses(B);
+  check('it shows the same courses, without the samples', bCourses.length === mine.length && mine.every(c => bCourses.includes(c)), bCourses);
+  check('B’s samples didn’t go up', !live().some(([, d]) => /"sample":true/.test(d.body)));
 
-  console.log('\n# Changes flow between devices');
-  const titleOf = (D, n) => D.js(`document.querySelectorAll('#rows tr[data-id] [data-k="title"]')[${n}].value`);
-  const setTitle = (D, n, v) => D.js(`(() => { const i = document.querySelectorAll('#rows tr[data-id] [data-k="title"]')[${n}]; i.value = ${JSON.stringify(v)}; i.dispatchEvent(new Event('change', { bubbles: true })); i.blur(); })()`);
-  for (const D of [A, B]) await D.js(`document.querySelectorAll('#coursebar [data-view]')[1].click()`);
+  console.log('\n# Changes flow between computers');
+  for (const D of [A, B]) await open(D, 1);
   await setTitle(A, 0, 'Edited on A'); await A.flushed();
-  B.win.focus(); await B.js(`document.dispatchEvent(new Event('visibilitychange'))`); await sleep(800);
-  check('an edit on A shows up on B', (await titleOf(B, 0)) === 'Edited on A', await titleOf(B, 0));
+  await waitFor(() => (bodyOf(courseDocs().find(k => /Edited on A/.test(server.docs.get(k).body)) || 'x') || false));
+  B.win.focus(); await B.js(`document.dispatchEvent(new Event('visibilitychange'))`);
+  check('an edit on A shows up on B', await waitFor(async () => (await titleOf(B, 0)) === 'Edited on A'), await titleOf(B, 0));
   await addTask(A, 'Group meeting prep in 4 days'); await A.click('#qaReview [data-tsave]'); await A.flushed();
-  B.win.focus(); await B.js(`document.dispatchEvent(new Event('visibilitychange'))`); await sleep(800);
+  await waitFor(() => live().some(([, d]) => /Group meeting prep/.test(d.body)));
+  await syncNow(B);
   await B.js(`document.querySelector('.nav [data-tab="inbox"]').click()`); await sleep(200);
   check('a task added on A shows up in B’s Inbox', (await inboxRows(B)).some(r => /Group meeting prep/.test(r)));
   await B.js(`document.querySelector('.nav [data-tab="semester"]').click()`);
-  check('with sync on, every change is also saved on this computer', (await A.js(`localStorage.getItem('ssync-courses-v1') || ''`)).includes('Edited on A'));
-  check('just opening the account never counts as an edit', ![...cloud.values()].some(b => b.json && b.json.includes('"title":"Lab Report 2"')) && !(await B.js(`(localStorage.getItem('ssync-snapshots-v1') || '').includes('two devices')`)));
+  check('every change is also saved on this computer', (await A.js(`localStorage.getItem('ssync-courses-v1') || ''`)).includes('Edited on A'));
+  const cid = await A.js(`document.querySelector('#rows tr[data-id]').dataset.id.split('-')[0]`);
+  const doc = 'course-' + cid;
 
-  console.log('\n# The same course edited on both');
-  await setTitle(A, 1, 'Second edit on A'); await A.flushed();
-  await setTitle(B, 1, 'Second edit on B'); await B.flushed();
-  const cid = await B.js(`document.querySelector('#rows tr[data-id]').dataset.id.split('-')[0]`);
-  const remote = JSON.parse(cloud.get('course-' + cid).json);
-  check('the newer edit wins in the account', remote.items.some(i => i.title === 'Second edit on B'), remote.items.map(i => i.title));
-  await B.js(`document.dispatchEvent(new CustomEvent('ssync:data', { detail: 'data' }))`); await sleep(300);
-  const bs = await B.js(`[...document.querySelectorAll('#snapList b')].map(b => b.textContent)`);
-  check('the other version is kept as a safety copy', bs.some(s => /edited on two devices/.test(s)), bs);
-  await B.js(`(() => { const b = [...document.querySelectorAll('#snapList li')].find(l => /Other copy of BIO 150.*two devices/.test(l.innerText)).querySelector('[data-restore]'); b.click(); })()`); await sleep(400);
-  check('and restoring it brings back A’s edit', (await titleOf(B, 1)) === 'Second edit on A', await titleOf(B, 1));
-  await B.flushed();
-
-  console.log('\n# Offline');
+  console.log('\n# Both computers edit while offline');
   cloudDown = true;
-  await setTitle(A, 2, 'Typed while offline');
-  await addTask(A, 'Offline task tomorrow'); await A.click('#qaReview [data-tsave]'); await sleep(1500);
-  await A.js(`document.querySelector('.nav [data-tab="semester"]').click()`);
-  check('an offline save says so and keeps the change', /Offline/.test(await A.saveStatus()), await A.saveStatus());
-  await A.reload();
-  await A.js(`document.querySelectorAll('#coursebar [data-view]')[1].click()`);
-  check('reopening offline loads this computer’s copy', (await titleOf(A, 2)) === 'Typed while offline', await titleOf(A, 2));
+  await setTitle(A, 1, 'A changed this one'); await A.flushed();
+  await setTitle(B, 2, 'B changed that one'); await B.flushed();
+  check('offline, the status says so', !!(await A.until(`/Offline/.test(document.getElementById('saveStatus').textContent)`)), await status(A));
   cloudDown = false;
-  await A.until(`/Synced/.test(document.getElementById('saveStatus').textContent)`, 20000);
-  check('a task created offline reaches the account too', [...cloud.values()].some(b => b.json && b.json.includes('Offline task')));
-  check('it syncs by itself when the account is back', JSON.parse(cloud.get('course-' + cid).json).items.some(i => i.title === 'Typed while offline'), await A.saveStatus());
+  await syncNow(A); await syncNow(B); await syncNow(A);
+  const both = bodyOf(doc).items.map(i => i.title);
+  check('edits to different deliverables are combined, with nothing to choose', both.includes('A changed this one') && both.includes('B changed that one') && !/your choice/.test(await status(B)), both);
+  check('and both computers have both', (await titleOf(A, 2)) === 'B changed that one' && (await titleOf(B, 1)) === 'A changed this one');
+  const v0 = server.docs.get(doc).version;
+  await syncNow(A); await syncNow(B);
+  check('syncing again changes nothing', server.docs.get(doc).version === v0);
 
-  console.log('\n# Deleting on one device');
-  B.win.focus(); await B.js(`document.dispatchEvent(new Event('visibilitychange'))`); await sleep(800);
-  const before = await A.js(`document.querySelectorAll('#coursebar [data-view]').length`);
-  await B.js(`document.querySelectorAll('#coursebar [data-view]')[1].click()`);
-  await B.click('#removeCourse'); await B.click('#removeCourse'); await B.flushed();
-  A.win.focus(); await A.js(`document.activeElement && document.activeElement.blur(); document.dispatchEvent(new Event('visibilitychange'))`); await sleep(800);
-  check('a course removed on B disappears on A', (await A.js(`document.querySelectorAll('#coursebar [data-view]').length`)) === before - 1);
+  console.log('\n# The same deliverable changed on both');
+  const clash = async (a, b) => {
+    cloudDown = true;
+    await setTitle(A, 3, a); await A.flushed();
+    await setTitle(B, 3, b); await B.flushed();
+    cloudDown = false;
+    await syncNow(A); await syncNow(B);
+  };
+  await clash('From A', 'From B');
+  check('it isn’t decided for you: B says a change needs a choice', /1 change needs your choice/.test(await status(B)), await status(B));
+  check('B keeps its own version meanwhile, and the account keeps A’s', (await titleOf(B, 3)) === 'From B' && bodyOf(doc).items.some(i => i.title === 'From A'));
+  await B.click('#saveStatus');
+  const card = await B.until(`document.querySelector('[data-conflict]') && document.querySelector('[data-conflict]').innerText`);
+  check('Needs your choice shows both versions and where the other came from', /From B/.test(card) && /From A/.test(card) && /Mac A/.test(card), card);
+  await B.click('[data-conflict] [data-pick="theirs"]'); await sleep(300); await syncNow(B);
+  check('“Keep the other” takes A’s version', (await titleOf(B, 3)) === 'From A' && !/your choice/.test(await status(B)));
+  check('and B’s version is kept as a safety copy', /From B/.test(await B.js(`localStorage.getItem('ssync-snapshots-v1') || ''`)));
+  await clash('Again from A', 'Again from B');
+  await B.js(`document.dispatchEvent(new CustomEvent('ssync:data', { detail: 'data' }))`); await B.until(`!!document.querySelector('[data-conflict]')`);
+  await B.click('[data-conflict] [data-pick="mine"]'); await sleep(300); await syncNow(B); await syncNow(A);
+  check('“Keep this computer’s” sends B’s version to everyone', (await titleOf(A, 3)) === 'Again from B' && bodyOf(doc).items.some(i => i.title === 'Again from B'));
+  await clash('Third from A', 'Third from B');
+  await B.js(`document.dispatchEvent(new CustomEvent('ssync:data', { detail: 'data' }))`); await B.until(`!!document.querySelector('[data-conflict]')`);
+  const nBefore = (await courses(B)).length;
+  await B.click('[data-conflict] [data-pick="both"]'); await sleep(300); await syncNow(B); await syncNow(A);
+  const after = await courses(A);
+  check('“Keep both” makes the other version a second course, on both computers', (await courses(B)).length === nBefore + 1 && after.some(c => /\(2\)/.test(c)), after);
+  await B.js(`document.querySelector('dialog.data-dlg').close()`);
+
+  console.log('\n# Offline, then back');
+  cloudDown = true;
+  await open(A, 1); await setTitle(A, 0, 'Typed while offline'); await A.flushed();
+  await A.reload();
+  await open(A, 1);
+  check('reopening offline loads this computer’s copy', (await titleOf(A, 0)) === 'Typed while offline');
+  cloudDown = false;
+  check('it syncs by itself when the account is back', await waitFor(() => bodyOf(doc).items.some(i => i.title === 'Typed while offline'), 30000), await status(A));
+
+  console.log('\n# Removing a course');
+  await syncNow(B);
+  const removeCode = (await courses(B)).find(c => /\(2\)/.test(c));
+  await B.js(`[...document.querySelectorAll('#coursebar [data-view]')].find(b => /\\(2\\)/.test(b.textContent)).click()`);
+  await B.click('#removeCourse'); await B.click('#removeCourse'); await B.flushed(); await syncNow(B); await syncNow(A);
+  check('a course removed on B disappears on A', !(await courses(A)).includes(removeCode), await courses(A));
+  check('A keeps a safety copy of it', /removed on Windows PC/.test(await A.js(`localStorage.getItem('ssync-snapshots-v1') || ''`)));
+  // Stop syncing one course, removing it from the account.
+  await open(A, lastIdx); await sleep(200);
+  await A.click('#courseSync'); await A.until(`document.querySelector('dialog.course-sync[open]')`);
+  await A.click('dialog.course-sync [data-cs="remove"]');
+  await waitFor(() => !bodyOf('course-' + lastCid));
+  check('“Remove it from the account” deletes the account’s copy and keeps it here', !bodyOf('course-' + lastCid) && (await courses(A)).includes(lastName) && /Only on this computer/.test(await A.js(`document.getElementById('courseSync').textContent`)));
+  await syncNow(B);
+  check('other computers drop it too', (await courses(B)).length === (await courses(A)).length - 1 && !(await courses(B)).includes(lastName), await courses(B));
+  await open(A, lastIdx); await setTitle(A, 0, 'Private edit'); await A.flushed(); await syncNow(A);
+  check('and edits to it stay on this computer', !live().some(([, d]) => /Private edit/.test(d.body)));
 
   console.log('\n# Signing out');
   await A.click('#accountBtn'); await sleep(200);
-  const p = A.loaded(); await A.click('#signOutBtn'); await p; await sleep(1500);
-  check('signing out keeps your courses on this computer', (await A.js(`document.querySelectorAll('#coursebar [data-view]').length`)) === before - 1 && !(await A.js(`!!localStorage.getItem('ssync-account-cache-v1')`)));
-  check('and goes back to saving on this computer', /this computer/.test(await A.saveStatus()), await A.saveStatus());
-  // Legacy: a computer that was syncing before consent existed keeps syncing.
-  await B.js(`localStorage.removeItem('ssync-sync-consent-user-1')`); await B.reload();
-  check('a computer that was already syncing keeps syncing after the update', /account/.test(await B.saveStatus()), await B.saveStatus());
+  const n = (await courses(A)).length;
+  { const p = A.loaded(); await A.click('#signOutBtn'); await p; await A.until(`!!document.querySelector('#coursebar [data-view]')`); await sleep(1500); }
+  check('signing out keeps your courses on this computer', (await courses(A)).length === n);
+  check('and stops syncing', !/Synced/.test(await status(A)) && !(await A.js(`Object.keys(localStorage).some(k => k.startsWith('ssync-sync-user'))`)), await status(A));
 
-  console.log('\n# A computer with its own courses signs into an account that has some');
+  console.log('\n# A computer with its own course joins');
   const C = await newWindow('persist:device-c');
+  devices.set(C.win.webContents.id, 'Laptop');
   await C.click('[data-ob="skip"]');
   await C.js(`document.getElementById('addCourse').click()`);
   await C.js(`document.getElementById('syllabusInput').value = 'CHEM 110: General Chemistry\\nGRADING\\nFinal exam ... 100%\\nDec 11 Final exam'`);
   await C.click('#useLocal'); await C.click('#parseBtn');
   await C.until(`/CHEM 110/.test(document.getElementById('coursebar').innerText) && !document.getElementById('parseBtn').disabled`, 15000);
   await C.flushed();
-  await C.click('#accountBtn'); await sleep(200);
-  await C.js(`(() => { document.getElementById('authEmail').value = 'student@example.com'; document.getElementById('authPass').value = 'correct horse'; document.getElementById('authForm').requestSubmit(); })()`);
-  const askC = await syncDialog(C);
-  check('asks before adding them', /This computer has 1 of its own/.test(askC) && /CHEM 110/.test(askC), askC);
-  const p2 = C.loaded(); await C.click('[data-sc="add"]'); await p2; await sleep(1500);
-  check('“Add mine to the account” puts the course in the account', [...cloud.values()].some(b => b.json && /CHEM 110/.test(b.json)));
-  check('samples from this computer aren’t added to an existing account', ![...cloud.values()].some(b => b.json && /"sample":true/.test(b.json)));
-  check('and C now shows the account’s courses too', /BIO 150|ECON 101/.test(await C.js(`document.getElementById('coursebar').innerText`)));
-  await C.click('#accountBtn'); await sleep(200);
-  await C.js(`document.getElementById('wipeLocal').checked = true`);
-  { const p = C.loaded(); await C.click('#signOutBtn'); await p; await sleep(1500); }
-  check('signing out with “remove from this computer” clears it', !(await C.js(`!!localStorage.getItem('ssync-courses-v1') && /CHEM 110/.test(localStorage.getItem('ssync-courses-v1'))`)) && !/CHEM 110/.test(await C.js(`document.getElementById('coursebar').innerText`)));
+  await signIn(C);
+  const askC = await chooser(C);
+  check('it lists this computer’s course and what the account has', /CHEM 110/.test(askC) && /account also has/.test(askC), askC);
+  await C.click('dialog.sync-choose [data-sc="yes"]');
+  await waitFor(() => live().some(([, d]) => /CHEM 110/.test(d.body)));
+  check('its course goes up and the account’s come down', live().some(([, d]) => /CHEM 110/.test(d.body)) && (await courses(C)).length > 1);
+  check('its samples aren’t uploaded', !live().some(([, d]) => /"sample":true/.test(d.body)));
 
-  console.log('\n# Choosing the account’s courses keeps this computer’s in a backup');
-  const E = await newWindow('persist:device-e');
-  await E.click('[data-ob="skip"]');
-  await E.js(`document.getElementById('addCourse').click()`);
-  await E.js(`document.getElementById('syllabusInput').value = 'PHYS 101: Physics\\nGRADING\\nFinal exam ... 100%\\nDec 12 Final exam'`);
-  await E.click('#useLocal'); await E.click('#parseBtn');
-  await E.until(`/PHYS 101/.test(document.getElementById('coursebar').innerText) && !document.getElementById('parseBtn').disabled`, 15000);
-  await E.js(`document.querySelectorAll('#coursebar [data-view]').length && document.getElementById('clearSamples') && document.getElementById('clearSamples').click()`); await E.flushed();
-  await E.click('#accountBtn'); await sleep(200);
-  await E.js(`(() => { document.getElementById('authEmail').value = 'student@example.com'; document.getElementById('authPass').value = 'correct horse'; document.getElementById('authForm').requestSubmit(); })()`);
-  await syncDialog(E);
-  { const p = E.loaded(); await E.click('[data-sc="use"]'); await p; await E.until(`!!document.querySelector('#coursebar [data-view]')`); await sleep(1500); }
-  check('“Use the account’s courses” shows the account’s', !/PHYS 101/.test(await E.js(`document.getElementById('coursebar').innerText`)) && /BIO 150|ECON 101/.test(await E.js(`document.getElementById('coursebar').innerText`)));
-  check('and this computer’s course is kept in a safety copy and a backup file', /PHYS 101/.test(await E.js(`localStorage.getItem('ssync-snapshots-v1') || ''`)) && fs.readdirSync(path.join(TMP, 'profile', 'Backups')).some(n => /before-account-switch/.test(n) && /PHYS 101/.test(fs.readFileSync(path.join(TMP, 'profile', 'Backups', n), 'utf8'))));
-  check('nothing from it was uploaded', ![...cloud.values()].some(b => b.json && /PHYS 101/.test(b.json)));
-  for (const D of [E]) D.errors.forEach(e => A.errors.push(e));
-  if (!process.argv.includes('--keep')) E.win.destroy();
-  await phaseUpgrade(A);
-  await phaseOldAccount(A);
+  console.log('\n# Removing your data from the account');
+  await C.js(`document.querySelector('dialog.account')?.close(); document.dispatchEvent(new CustomEvent('ssync:data', { detail: 'data' }))`);
+  await C.until(`!!document.getElementById('csClear')`);
+  await C.click('#csClear');
+  await C.js(`document.getElementById('csPass').value = 'correct horse'; document.getElementById('csClearGo').click()`);
+  await waitFor(() => server.docs.size === 0);
+  check('it deletes everything synced and turns sync off', server.docs.size === 0 && !(await C.js(`window.CloudSync.isOn()`)));
+  await syncNow(B);
+  check('other computers turn sync off too, keeping their courses', !(await B.js(`window.CloudSync.isOn()`)) && (await courses(B)).length > 0 && server.docs.size === 0);
+  await C.js(`document.querySelector('dialog.data-dlg').close()`);
+
   for (const D of [B, C]) D.errors.forEach(e => A.errors.push(e));
   if (!process.argv.includes('--keep')) { B.win.destroy(); C.win.destroy(); }
+  await phaseUpgrade(A);
+  await phaseOldAccount(A);
 }
 
 app.on('browser-window-created', (_e, win) => {

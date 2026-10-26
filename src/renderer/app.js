@@ -1115,7 +1115,7 @@ function paintSaveStatus() {
   const el = $('saveStatus'); if (!el) return;
   const when = store.lastOk ? ` · ${clockTime(store.lastOk)}` : '';
   const secs = Math.max(0, Math.ceil((store.retryAt - Date.now()) / 1000));
-  const copy = {
+  let copy = {
     sample: ['', store.syncOff ? `Sample courses · saved ${HERE} · cloud sync off` : store.mode === 'db' ? `Sample courses · your changes save to ${acctName()}` : store.mode === 'local' ? `Sample courses · your changes save ${HERE}${store.signedOut && !window.desktop ? '. Sign in to Claude to keep them on every device' : ''}` : 'Sample courses'],
     saving: ['busy', 'Saving…'],
     saved: ['ok', store.mode === 'db' ? `Synced to ${acctName()}${when}` : store.syncOff ? `Saved ${HERE}${when} · cloud sync off` : `Saved ${HERE}${when}`],
@@ -1124,6 +1124,8 @@ function paintSaveStatus() {
     error: ['err', 'Couldn\'t save. Open Your data and export a backup so nothing is lost.'],
     none: ['', 'Changes last until you reload'],
   }[store.status] || ['', ''];
+  const cloud = window.CloudSync && window.CloudSync.label(store.status); // desktop cloud sync, when it's on
+  if (cloud) copy = cloud;
   el.className = 'save-status ' + copy[0]; el.textContent = copy[1];
   if (dataDlg && dataDlg.open) paintDataStatus();
 }
@@ -1237,7 +1239,7 @@ async function flushSave() {
       const plan = await syncNow();
       store.status = plan.lost.length ? 'conflict' : 'saved';
       store.fails = 0;
-    } else if (store.mode === 'local') { saveLocal(); store.status = 'saved'; }
+    } else if (store.mode === 'local') { saveLocal(); store.status = 'saved'; if (window.CloudSync) window.CloudSync.changed(); }
     if (store.mode !== 'none') { store.lastOk = Date.now(); autoBackup(); }
   } catch (e) {
     const denied = e && /not_granted|not_permitted|forbidden|permission/i.test(String(e.code || ''));
@@ -1453,6 +1455,7 @@ async function initStore() {
   paintSaveStatus();
   if (store.problem) showProblem(store.problem);
   if (store.migrated) showMigrated(store.migrated);
+  if (window.CloudSync) window.CloudSync.start();
   if (fresh && store.status !== 'retry') maybeOnboard();
   setTimeout(() => { checkReminders(); pushTray(); }, 5000);
   pushQuickContext(); drainQuick();
@@ -1506,6 +1509,7 @@ function renderAll() {
   renderCourseBar(); renderSyllabusReview(); renderSourceMeta(); renderFilters(); renderTable(); renderGrading();
   const weeks = renderHeat(); renderSummary(weeks); renderSync();
   renderFeatures();
+  if (window.CloudSync) window.CloudSync.paintCourse();
 }
 function renderDerived() {
   renderCourseBar(); renderSyllabusReview();
@@ -3162,7 +3166,7 @@ function openImport(b) {
 const dataDlg = makeDialog('wide data-dlg');
 function paintDataStatus() {
   const el = dataDlg.querySelector('#dataStatus'); if (!el) return;
-  const where = store.mode === 'db' ? `Synced to ${esc(acctName())}, with a complete copy ${HERE}.` : store.syncOff ? `Saved ${HERE}. You’re signed in, but cloud sync is off, so nothing is uploaded.` : store.mode === 'local' ? `Saved ${HERE} only.` : 'Not being saved: this view has no storage.';
+  const where = (window.CloudSync && window.CloudSync.where()) || (store.mode === 'db' ? `Synced to ${esc(acctName())}, with a complete copy ${HERE}.` : store.syncOff ? `Saved ${HERE}. You’re signed in, but cloud sync is off, so nothing is uploaded.` : store.mode === 'local' ? `Saved ${HERE} only.` : 'Not being saved: this view has no storage.');
   const last = store.lastOk ? `Last saved ${fmtDay(new Date(store.lastOk))}, ${clockTime(store.lastOk)}.` : '';
   const exp = extras.lastExport ? `Last backup file ${fmtDay(new Date(extras.lastExport))}.` : 'You haven’t exported a backup file yet.';
   el.innerHTML = `<div class="ds ${$('saveStatus') ? $('saveStatus').className.replace('save-status', '') : ''}"><b>${esc($('saveStatus') ? $('saveStatus').textContent : '')}</b><span>${where} ${last}</span><span>${exp}</span></div>`;
@@ -3190,7 +3194,8 @@ function openData() {
   const theme = (() => { try { return localStorage.getItem('ssync-theme') || 'system'; } catch (_) { return 'system'; } })();
   dataDlg.innerHTML = `<form method="dialog"><h2>Your data</h2>
     <section class="data-sec" id="dataStatus"></section>
-    <div class="row"><button type="button" class="btn sm" id="dataSync">Sync now</button>${store.status === 'retry' ? '<button type="button" class="btn sm" id="dataRetry">Retry now</button>' : ''}${LOCAL_FIRST && store.syncOff ? '<button type="button" class="btn sm primary" id="syncOnBtn">Turn on cloud sync…</button>' : ''}${LOCAL_FIRST && store.mode === 'db' ? '<button type="button" class="btn sm ghost" id="syncOffBtn">Turn off cloud sync</button>' : ''}</div>
+    <div class="row"><button type="button" class="btn sm" id="dataSync">Sync now</button>${store.status === 'retry' ? '<button type="button" class="btn sm" id="dataRetry">Retry now</button>' : ''}</div>
+    <section class="data-sec" id="cloudSec" hidden></section>
     <section class="data-sec"><h3>Backup file</h3>
       <p class="hint">Everything in one file: courses, scores, study sets and settings. Keep a copy somewhere safe, like a cloud drive, and a new computer or a reinstall never costs you a semester.</p>
       <div class="row"><button type="button" class="btn primary" id="dataExport">Export backup</button><button type="button" class="btn" id="dataImport">Restore from a file…</button><button type="button" class="btn ghost" id="dataCsv">Deliverables as a spreadsheet (.csv)</button></div>
@@ -3211,22 +3216,11 @@ function openData() {
     </section>
     <div class="actions"><button type="button" class="btn ghost" id="dataTour">Show the welcome guide</button><button type="button" class="btn ghost" id="dataKeys">Keyboard shortcuts</button><span style="flex:1"></span><button class="btn primary" value="close">Done</button></div></form>`;
   paintDataStatus(); renderSnapList(); renderDiskBackups();
+  if (window.CloudSync) window.CloudSync.renderData();
   const q = s => dataDlg.querySelector(s);
   q('#dataSync').onclick = async () => { q('#dataSync').disabled = true; await flushSave(); q('#dataSync').disabled = false; paintDataStatus(); };
   if (q('#dataRetry')) q('#dataRetry').onclick = () => { retryNow(); q('#dataRetry').remove(); };
   q('#dataExport').onclick = exportBackup;
-  if (q('#syncOnBtn')) q('#syncOnBtn').onclick = () => { dataDlg.close(); document.dispatchEvent(new CustomEvent('ssync:open', { detail: 'sync' })); };
-  if (q('#syncOffBtn')) {
-    let armed = false;
-    q('#syncOffBtn').onclick = async () => {
-      const b = q('#syncOffBtn');
-      if (!armed) { armed = true; b.textContent = 'Turn off? Your courses stay on this computer. Click again'; return; }
-      await flushSave();
-      try { saveLocal(); } catch (_) {}
-      try { localStorage.removeItem(consentKey(store.uid)); localStorage.removeItem(CACHE_KEY); } catch (_) {}
-      location.reload();
-    };
-  }
   q('#dataCsv').onclick = exportCsv;
   q('#dataImport').onclick = async () => { const f = await pickFile('.json,application/json'); if (f) importBackup(f); };
   q('#snapClear').onclick = () => { try { localStorage.removeItem(SNAP_KEY); localStorage.removeItem(DAILY_KEY); } catch (_) {} renderSnapList(); toast('Cleared safety copies'); };
@@ -4631,4 +4625,10 @@ let startTab = 'today';
 try { startTab = localStorage.getItem('ssync-tab') || 'today'; } catch (_) {}
 setTab(startTab);
 paintFocus();
+// What cloudsync.js (desktop) needs from the page. Getters, because some of these are replaced, not changed.
+if (window.desktop) window.SSyncPage = {
+  get state() { return state; }, get store() { return store; }, get decks() { return decks; }, get dataDlg() { return dataDlg; },
+  localDocs, applyDocs, saveLocal, snapshot, courseById, editCourse, paintSaveStatus, clockTime, toast, openData, makeDialog, backupData, uid, esc,
+  HERE, INBOX_ID, MAX_COURSES,
+};
 })();

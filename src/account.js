@@ -68,13 +68,14 @@ async function call(method, route, body, { token, timeout = 15000 } = {}) {
 const fail = r => ({ ok: false, code: r.code, message: r.message });
 
 // Calls that need the person's session. A rejected session signs this computer out.
-async function authed(method, route, body) {
+async function authed(method, route, body, timeout) {
   const a = await readAuth();
   if (!a) return { ok: false, status: 401, code: 'unauthorized', message: 'Sign in first.' };
-  const r = await call(method, route, body, { token: a.token });
+  const r = await call(method, route, body, { token: a.token, timeout });
   if (r.status === 401 && r.code === 'unauthorized') { await writeAuth(null); r.signedOut = true; }
   return r;
 }
+let syncAvailable = false; // remembered from the last check, so offline computers keep their sync status
 const clean = s => String(s ?? '').trim().slice(0, 320);
 const secret = s => String(s ?? '').slice(0, 200);
 
@@ -91,8 +92,13 @@ const api = {
     if (!a) return { configured, user: null, sync: false };
     // Check the session is still good; offline, trust the saved one.
     const r = await authed('GET', '/v1/account', null);
-    if (r.ok) { const user = userOf(r.data); if (user.email !== a.user.email) await writeAuth({ token: a.token, user }); return { configured, user, sync: false }; }
-    return { configured, user: r.signedOut ? null : a.user, sync: false, offline: r.code === 'offline' };
+    if (r.ok) {
+      const user = userOf(r.data);
+      syncAvailable = r.data.sync_available === true;
+      if (user.email !== a.user.email) await writeAuth({ token: a.token, user });
+      return { configured, user, sync: syncAvailable };
+    }
+    return { configured, user: r.signedOut ? null : a.user, sync: syncAvailable, offline: r.code === 'offline' };
   },
   async signUp({ email, password }) {
     const r = await call('POST', '/v1/auth/register', { email: clean(email), password: secret(password) });
@@ -146,6 +152,25 @@ const api = {
     const r = await authed('POST', '/v1/account/sessions/revoke-others', null);
     return r.ok ? { ok: true } : fail(r);
   },
+  /* Sync: the page sends and receives documents; the server decides whose they are from the session. */
+  async syncChanges({ since }) {
+    const r = await authed('GET', '/v1/sync/changes?since=' + Math.max(0, Math.floor(+since || 0)), null);
+    return r.ok ? { ok: true, ...r.data } : { ...fail(r), signedOut: !!r.signedOut };
+  },
+  async syncPush({ changes }) {
+    if (!Array.isArray(changes) || changes.length > 50) return { ok: false, message: 'Too many changes at once.' };
+    const list = changes.map(c => ({ doc_id: String(c.doc_id), base_version: Math.max(0, Math.floor(+c.base_version || 0)), ...(c.deleted ? { deleted: true } : { body: String(c.body) }) }));
+    const r = await authed('POST', '/v1/sync/push', { changes: list }, 60000);
+    return r.ok ? { ok: true, ...r.data } : { ...fail(r), signedOut: !!r.signedOut };
+  },
+  async syncUsage() {
+    const r = await authed('GET', '/v1/sync/usage', null);
+    return r.ok ? { ok: true, ...r.data } : fail(r);
+  },
+  async syncClear({ password }) {
+    const r = await authed('POST', '/v1/sync/clear', { password: secret(password) });
+    return r.ok ? { ok: true } : fail(r);
+  },
   async deleteAccount({ password }) {
     const r = await authed('POST', '/v1/account/delete', { password: secret(password) });
     if (!r.ok) return fail(r);
@@ -160,6 +185,7 @@ function register(ipcMain) {
     'account:sign-in': 'signIn', 'account:sign-out': 'signOut', 'account:reset-request': 'requestReset',
     'account:reset-complete': 'completeReset', 'account:change-password': 'changePassword', 'account:sessions': 'sessions',
     'account:revoke-session': 'revokeSession', 'account:revoke-others': 'revokeOthers', 'account:delete': 'deleteAccount',
+    'sync:changes': 'syncChanges', 'sync:push': 'syncPush', 'sync:usage': 'syncUsage', 'sync:clear': 'syncClear',
   };
   for (const [ch, fn] of Object.entries(routes)) ipcMain.handle(ch, (_e, args) => api[fn](args || {}));
 }

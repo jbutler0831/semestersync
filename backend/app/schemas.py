@@ -48,6 +48,7 @@ class UserOut(BaseModel):
     email: str
     email_verified: bool
     created_at: datetime
+    sync_available: bool = True
 
 
 class SessionOut(BaseModel):

@@ -16,7 +16,7 @@ PASSWORD = "correct horse battery"
 @pytest.fixture(autouse=True)
 def clean():
     with engine().begin() as c:
-        c.execute(text("TRUNCATE users, sessions, email_codes, rate_events RESTART IDENTITY CASCADE"))
+        c.execute(text("TRUNCATE users, sessions, email_codes, rate_events, sync_docs RESTART IDENTITY CASCADE"))
     mail.outbox.clear()
     yield
 

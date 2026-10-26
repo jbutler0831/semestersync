@@ -53,31 +53,11 @@
     return sample;
   }
 
-  // The page keeps courses on this computer. Only when the account server offers sync (and the person
-  // agrees, see app.js) does saving also go to the account; until then `db` is null.
-  const account = d.account.status().catch(() => ({ configured: false, user: null, sync: false }));
-  const fail = res => { throw { code: 'unavailable', message: res.message }; };
-  const db = {
-    collection: () => ({
-      async get() {
-        const res = await d.cloud.list();
-        if (!res.ok) fail(res);
-        return { docs: res.docs.map(x => ({ id: x.id, exists: true, data: () => x.body })) };
-      },
-      doc: id => ({
-        async set(body) { const res = await d.cloud.set(id, body); if (!res.ok) fail(res); },
-        async delete() { const res = await d.cloud.remove(id); if (!res.ok) fail(res); },
-      }),
-    }),
-  };
-
+  // The desktop page keeps courses on this computer and never uses the web version's account storage;
+  // cloud sync with SemesterSync accounts is cloudsync.js.
   window.claude = {
     async use(name) {
       if (name === 'sample') return (await d.claude.available()) ? makeSample() : null;
-      const { user, sync } = await account;
-      if (!user || !sync) return null;
-      if (name === 'db') return db;
-      if (name === 'user') return { id: async () => user.id, can: async () => true, me: async () => ({ id: user.id, name: user.email }) };
       return null;
     },
   };

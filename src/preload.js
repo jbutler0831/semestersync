@@ -49,11 +49,12 @@ contextBridge.exposeInMainWorld('desktop', {
     export: () => ipcRenderer.invoke('legacy:export'),
     forget: () => ipcRenderer.invoke('legacy:forget'),
   },
-  // Cloud sync (not available until sync is built on our own server; the page only uses it when status says so).
-  cloud: {
-    list: () => ipcRenderer.invoke('cloud:list'),
-    set: (id, body) => ipcRenderer.invoke('cloud:set', { id, body }),
-    remove: id => ipcRenderer.invoke('cloud:delete', { id }),
+  // Cloud sync with the account server (versioned documents; see renderer/cloudsync.js).
+  sync: {
+    changes: since => ipcRenderer.invoke('sync:changes', { since }),
+    push: changes => ipcRenderer.invoke('sync:push', { changes }),
+    usage: () => ipcRenderer.invoke('sync:usage'),
+    clear: password => ipcRenderer.invoke('sync:clear', { password }),
   },
   rooms: {
     join: code => ipcRenderer.invoke('room:join', { code }),
