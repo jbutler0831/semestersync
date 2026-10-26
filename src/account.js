@@ -157,10 +157,10 @@ const api = {
     const r = await authed('GET', '/v1/sync/changes?since=' + Math.max(0, Math.floor(+since || 0)), null);
     return r.ok ? { ok: true, ...r.data } : { ...fail(r), signedOut: !!r.signedOut };
   },
-  async syncPush({ changes }) {
+  async syncPush({ changes, epoch }) {
     if (!Array.isArray(changes) || changes.length > 50) return { ok: false, message: 'Too many changes at once.' };
     const list = changes.map(c => ({ doc_id: String(c.doc_id), base_version: Math.max(0, Math.floor(+c.base_version || 0)), ...(c.deleted ? { deleted: true } : { body: String(c.body) }) }));
-    const r = await authed('POST', '/v1/sync/push', { changes: list }, 60000);
+    const r = await authed('POST', '/v1/sync/push', { changes: list, ...(Number.isInteger(epoch) && epoch >= 0 ? { epoch } : {}) }, 60000);
     return r.ok ? { ok: true, ...r.data } : { ...fail(r), signedOut: !!r.signedOut };
   },
   async syncUsage() {

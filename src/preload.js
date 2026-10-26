@@ -52,7 +52,7 @@ contextBridge.exposeInMainWorld('desktop', {
   // Cloud sync with the account server (versioned documents; see renderer/cloudsync.js).
   sync: {
     changes: since => ipcRenderer.invoke('sync:changes', { since }),
-    push: changes => ipcRenderer.invoke('sync:push', { changes }),
+    push: (changes, epoch) => ipcRenderer.invoke('sync:push', { changes, epoch }),
     usage: () => ipcRenderer.invoke('sync:usage'),
     clear: password => ipcRenderer.invoke('sync:clear', { password }),
   },

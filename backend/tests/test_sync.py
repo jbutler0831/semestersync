@@ -174,3 +174,18 @@ def test_rate_limit_on_push(client):
     q("insert into rate_events (key) select 'sync-push:' || id from users, generate_series(1, 120)")
     r = client.post("/v1/sync/push", json={"changes": []}, headers=auth(t))
     assert r.status_code == 429
+
+
+def test_a_push_from_before_removal_writes_nothing(client):
+    t = signup(client)
+    epoch = changes(client, t)["epoch"]
+    r = client.post("/v1/sync/push", json={"epoch": epoch, "changes": [{"doc_id": "course-c1", "base_version": 0, "body": COURSE}]}, headers=auth(t))
+    assert r.json()["results"][0]["status"] == "ok"
+    assert client.post("/v1/sync/clear", json={"password": PASSWORD}, headers=auth(t)).status_code == 200
+    # Another computer, which hasn't heard about the removal yet, uploads a new course with the old epoch.
+    r = client.post("/v1/sync/push", json={"epoch": epoch, "changes": [{"doc_id": "course-c2", "base_version": 0, "body": COURSE}]}, headers=auth(t))
+    assert r.status_code == 200 and r.json()["results"] == [] and r.json()["epoch"] == epoch + 1
+    assert changes(client, t)["docs"] == []
+    # With the new epoch (after turning sync on again), uploads work.
+    r = client.post("/v1/sync/push", json={"epoch": epoch + 1, "changes": [{"doc_id": "course-c2", "base_version": 0, "body": COURSE}]}, headers=auth(t))
+    assert r.json()["results"][0]["status"] == "ok"

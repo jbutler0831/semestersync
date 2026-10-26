@@ -62,8 +62,9 @@ ipcMain.handle('sync:changes', (e, { since }) => {
   const page = rows.slice(0, 100);
   return { ok: true, docs: page.map(([id, d]) => out(id, d)), cursor: page.length ? page[page.length - 1][1].seq : Math.min(since, server.seq), more: rows.length > 100, epoch: server.epoch, reset: false };
 });
-ipcMain.handle('sync:push', (e, { changes }) => {
+ipcMain.handle('sync:push', (e, { changes, epoch }) => {
   const g = gate(e); if (g) return g;
+  if (epoch != null && epoch !== server.epoch) return { ok: true, results: [], epoch: server.epoch }; // removed since: write nothing
   const results = changes.map(c => {
     const d = server.docs.get(c.doc_id), have = d ? d.version : 0;
     if (c.base_version !== have) return { doc_id: c.doc_id, status: 'conflict', server: d ? out(c.doc_id, d) : { doc_id: c.doc_id, version: 0, deleted: true, body: null } };
@@ -850,7 +851,7 @@ async function phaseSync(A) {
   await C.until(`!!document.getElementById('csClear')`);
   await C.click('#csClear');
   await C.js(`document.getElementById('csPass').value = 'correct horse'; document.getElementById('csClearGo').click()`);
-  await waitFor(() => server.docs.size === 0);
+  await waitFor(async () => server.docs.size === 0 && !(await C.js(`window.CloudSync.isOn()`)));
   check('it deletes everything synced and turns sync off', server.docs.size === 0 && !(await C.js(`window.CloudSync.isOn()`)));
   await syncNow(B);
   check('other computers turn sync off too, keeping their courses', !(await B.js(`window.CloudSync.isOn()`)) && (await courses(B)).length > 0 && server.docs.size === 0);

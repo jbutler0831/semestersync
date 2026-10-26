@@ -51,6 +51,9 @@ class Change(BaseModel):
 
 class PushIn(BaseModel):
     changes: list[Change] = Field(max_length=MAX_BATCH)
+    # The epoch the computer last saw. If the person removed their synced data since, nothing is written, so a
+    # computer that hasn't heard about it yet can't put any of it back.
+    epoch: int | None = Field(None, ge=0)
 
 
 class ClearIn(BaseModel):
@@ -86,6 +89,8 @@ def push(body: PushIn, caller: Caller = Depends(current), db: Session = Depends(
     if len({c.doc_id for c in body.changes}) != len(body.changes):
         fail(db, 422, "invalid_request", "Each document can appear once per push.")
     u = locked_user(db, caller)
+    if body.epoch is not None and body.epoch != u.sync_epoch:
+        return {"results": [], "epoch": u.sync_epoch}
     ids = [c.doc_id for c in body.changes]
     existing = {d.doc_id: d for d in db.execute(select(SyncDoc).where(SyncDoc.user_id == u.id, SyncDoc.doc_id.in_(ids))).scalars()}
     count, used = db.execute(select(func.count(), func.coalesce(func.sum(SyncDoc.size), 0)).where(SyncDoc.user_id == u.id, SyncDoc.deleted.is_(False))).one()

@@ -19,7 +19,7 @@
 
   let user = null; // { id, email }
   let st = null;   // saved sync state for this account, or null when sync is off
-  let status = 'off', lastOk = 0, fails = 0, retryAt = 0, problem = '', timer = null, running = null, again = false;
+  let status = 'off', lastOk = 0, fails = 0, retryAt = 0, problem = '', timer = null, running = null, again = false, paused = false;
   const rejected = {}; // doc id -> message, for documents the server refused (too large, account full)
 
   function read(uid) { try { const v = JSON.parse(localStorage.getItem(KEY(uid)) || 'null'); return v && v.v === 1 ? v : null; } catch (_) { return null; } }
@@ -147,7 +147,7 @@
     for (let i = 0; i < changes.length;) {
       const batch = []; let bytes = 0;
       while (i < changes.length && batch.length < BATCH && (!batch.length || bytes + (changes[i].body || '').length <= BATCH_BYTES)) { bytes += (changes[i].body || '').length; batch.push(changes[i++]); }
-      const r = await ipc(d.sync.push(batch));
+      const r = await ipc(d.sync.push(batch, st.epoch));
       if (st.epoch != null && r.epoch !== st.epoch) throw { cleared: true };
       for (const res of r.results || []) {
         const c = batch.find(x => x.doc_id === res.doc_id); if (!c) continue;
@@ -167,7 +167,7 @@
   }
 
   async function cycle(force) {
-    if (!on()) return;
+    if (!on() || paused) return;
     if (running) { again = true; return running; }
     clearTimeout(timer);
     running = (async () => {
@@ -255,8 +255,12 @@
     q('#csClear').onclick = () => { q('#csClearForm').hidden = false; q('#csPass').focus(); };
     q('#csClearGo').onclick = async () => {
       if (!q('#csPass').value) { q('#csPass').focus(); return; }
+      // Let a sync that's under way finish first, and start no more, so nothing goes up after the data is removed.
+      paused = true; clearTimeout(timer);
+      if (running) await running;
       const r = await d.sync.clear(q('#csPass').value);
-      if (!r.ok) { q('#csMsg').textContent = r.message; q('#csMsg').hidden = false; return; }
+      paused = false;
+      if (!r.ok) { q('#csMsg').textContent = r.message; q('#csMsg').hidden = false; schedule(1000); return; }
       stop('Removed your synced data from the account. Sync is off; everything is still on this computer.'); renderData();
     };
     el.querySelectorAll('[data-pick]').forEach(b => b.onclick = () => resolve(b.dataset.id, b.dataset.pick));
