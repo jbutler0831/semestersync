@@ -568,20 +568,70 @@ async function phaseWeak(A) {
   await A.js(`document.querySelector('.nav [data-tab="semester"]').click()`);
 }
 
+// Data saved by earlier versions, in their own shapes, must load unchanged after the local-first upgrade,
+// and the exact saved text must be backed up to a file before anything is written.
+async function phaseUpgrade(A) {
+  console.log('\n# Data from earlier versions');
+  const F = await newWindow('persist:device-f');
+  const old = [
+    { id: 'c10', code: 'OLD 100', title: 'Saved by 1.0', text: 'OLD 100 syllabus', categories: [{ label: 'Exams', pct: 100, count: null, per: null, words: ['exam'], type: 'Exam' }], items: [{ id: 'c10-1', cid: 'c10', line: 1, title: 'Old exam', notes: '', type: 'Exam', date: '2026-12-01', time: '09:00', weight: 100, hours: 8, conf: 90, sync: true }], color: 0, parser: 'local', order: 1 },
+    { id: 'c13', code: 'MID 130', title: 'Saved by 1.3', text: '', categories: [], items: [{ id: 'c13-1', cid: 'c13', line: -1, title: 'Graded lab', notes: '', type: 'Lab', date: '2026-10-01', time: '23:59', weight: 20, hours: 5, conf: 99, sync: true, done: true, doneAt: '2026-10-01', score: 91, spent: 2 }], color: 1, parser: 'local', order: 2, credits: 4, target: 'B+', meets: [{ days: [1, 3], start: '09:00', end: '09:50', where: 'Room 1', kind: 'Class' }] },
+    { id: 'inbox', code: 'Inbox', title: '', text: '', categories: [], inbox: true, items: [{ id: 'qa1', cid: 'inbox', line: -1, title: 'Old inbox task', notes: '', type: 'Homework', date: '2026-11-20', time: '23:59', weight: 0, hours: 1, conf: 99, sync: true, src: 'inbox' }], drafts: [{ id: 'qd1', title: 'Undated old task', type: 'Reading', hours: 1, src: 'inbox' }], color: 0, parser: 'local', order: 0 },
+  ];
+  const ex = [['extras', JSON.stringify({ planner: { hours: [1, 2, 3, 4, 5, 6, 7], block: 1.5 }, gpa: { prior: '3.1', priorCredits: '30', goal: '' }, review: { days: {} } })], ['deck-d1', JSON.stringify({ id: 'd1', cid: 'c10', name: 'Old deck', cards: [{ id: 'k1', q: 'Old question?', a: 'Old answer' }], quiz: [], guide: '', created: 1 })]];
+  await F.js(`localStorage.clear(); localStorage.setItem('ssync-courses-v1', ${JSON.stringify(JSON.stringify(old.map(c => JSON.stringify(c))))}); localStorage.setItem('ssync-extras-v1', ${JSON.stringify(JSON.stringify(ex))}); localStorage.setItem('ssync-onboarded', '1'); 1`);
+  const backupsBefore = fs.readdirSync(path.join(TMP, 'profile', 'Backups')).filter(n => /before-local-first/.test(n)).length;
+  await F.reload();
+  const bar = await F.js(`document.getElementById('coursebar').innerText`);
+  check('courses saved by 1.0 and 1.3 load', /OLD 100/.test(bar) && /MID 130/.test(bar), bar);
+  await F.js(`document.querySelector('.nav [data-tab="inbox"]').click()`); await sleep(200);
+  const inb = await F.js(`document.getElementById('inboxList').innerText`);
+  check('Inbox tasks saved by 1.4 load, dated and undated', /Old inbox task/.test(inb) && /Undated old task/.test(inb), inb);
+  await F.js(`document.querySelector('.nav [data-tab="study"]').click()`); await sleep(200);
+  check('study sets and settings load', /Old deck/.test(await F.js(`document.getElementById('deckList').innerText`)) && (await F.js(`document.querySelector('.nav [data-tab="plan"]').click(), document.querySelector('#hoursGrid input[data-dow="0"]').value`)) === '1');
+  await F.js(`document.querySelector('.nav [data-tab="grades"]').click(); [...document.querySelectorAll('#gradeChips [data-gc]')].find(b => /MID 130/.test(b.textContent)).click()`); await sleep(200);
+  check('scores and progress are kept', (await F.js(`[...document.querySelectorAll('#scoreRows [data-score]')].map(i => i.value)`)).includes('91'));
+  const raws = fs.readdirSync(path.join(TMP, 'profile', 'Backups')).filter(n => /before-local-first/.test(n));
+  const newest = raws.slice().sort().pop(), raw = newest && JSON.parse(fs.readFileSync(path.join(TMP, 'profile', 'Backups', newest), 'utf8'));
+  check('the exact saved data was backed up to a file first', raws.length === backupsBefore + 1 && raw && raw.kind === 'raw-before-upgrade' && /OLD 100/.test(raw.raw.courses) && /Old deck/.test(raw.raw.extras));
+  check('and the upgrade is recorded, so it happens once', (await F.js(`localStorage.getItem('ssync-format')`)) === '2');
+  await F.reload();
+  check('a second start doesn’t back up again', fs.readdirSync(path.join(TMP, 'profile', 'Backups')).filter(n => /before-local-first/.test(n)).length === backupsBefore + 1);
+  await F.nextFile(newest, fs.readFileSync(path.join(TMP, 'profile', 'Backups', newest), 'utf8'), 'application/json');
+  await F.js(`document.dispatchEvent(new CustomEvent('ssync:data', { detail: 'import' }))`);
+  check('that backup can be restored like any other', /OLD 100/.test(await F.until(`document.querySelector('dialog.import-dlg[open]') && document.querySelector('dialog.import-dlg').innerText`)));
+  await F.js(`document.querySelector('dialog.import-dlg').close()`);
+  F.errors.forEach(e => A.errors.push(e));
+  if (!process.argv.includes('--keep')) F.win.destroy();
+}
+
 async function phaseSync(A) {
-  console.log('\n# Signing in moves this computer’s courses into the account');
+  console.log('\n# Signing in never uploads without asking');
   const mine = await A.js(`[...document.querySelectorAll('#coursebar [data-view]')].slice(1).map(b => b.textContent.replace(/\\d+$/, ''))`);
+  const courseDocs = () => [...cloud.keys()].filter(k => k.startsWith('course-') && k !== 'course-inbox');
+  const syncDialog = D => D.until(`document.querySelector('dialog.account[open]') && /Cloud sync/.test(document.querySelector('dialog.account').innerText) && document.querySelector('dialog.account').innerText`);
   await A.click('#accountBtn'); await sleep(200);
   await A.js(`(() => { document.getElementById('authEmail').value = 'student@example.com'; document.getElementById('authPass').value = 'correct horse'; document.getElementById('authForm').requestSubmit(); })()`);
-  await A.loaded(); await A.until(`!!document.querySelector('#coursebar [data-view]')`); await sleep(1500);
-  const courseDocs = () => [...cloud.keys()].filter(k => k.startsWith('course-') && k !== 'course-inbox');
-  check('the account gets every course', courseDocs().length === mine.length, { cloud: [...cloud.keys()], mine });
+  const ask = await syncDialog(A);
+  check('after signing in, it asks before uploading, and lists what would go', /Upload this computer’s|Upload this computer's/.test(ask) && /BIO 150/.test(ask), ask);
+  let p0 = A.loaded(); await A.click('[data-sc="no"]'); await p0; await A.until(`!!document.querySelector('#coursebar [data-view]')`); await sleep(1500);
+  check('“Not now” uploads nothing', cloud.size === 0, [...cloud.keys()]);
+  check('and everything stays on this computer, with sync shown as off', (await A.js(`[...document.querySelectorAll('#coursebar [data-view]')].length - 1`)) === mine.length && /sync off/.test(await A.saveStatus()), await A.saveStatus());
+  await A.js(`document.dispatchEvent(new CustomEvent('ssync:data', { detail: 'data' }))`); await sleep(200);
+  await A.click('#syncOnBtn');
+  await syncDialog(A);
+  p0 = A.loaded(); await A.click('[data-sc="add"]'); await p0; await A.until(`!!document.querySelector('#coursebar [data-view]')`); await sleep(1500);
+  check('turning sync on later uploads every course', courseDocs().length === mine.length, { cloud: [...cloud.keys()], mine });
   check('the page now saves to the account', /account/.test(await A.saveStatus()), await A.saveStatus());
 
   console.log('\n# A second computer');
   const B = await newWindow('persist:device-b');
   users.set(B.win.webContents.id, USER);
   await B.reload();
+  check('a newly signed-in computer doesn’t sync until asked', /sync off/.test(await B.saveStatus()), await B.saveStatus());
+  await B.js(`document.querySelector('dialog.onboard')?.close(); document.dispatchEvent(new CustomEvent('ssync:open', { detail: 'sync' }))`);
+  check('it offers to turn sync on', /Your account has \d+ course/.test(await syncDialog(B)));
+  { const p = B.loaded(); await B.click('[data-sc="use"]'); await p; await B.until(`!!document.querySelector('#coursebar [data-view]')`); await sleep(1500); }
   const bCourses = await B.js(`[...document.querySelectorAll('#coursebar [data-view]')].length - 1`);
   check('signs in and sees the same courses', bCourses === mine.length, bCourses);
   check('doesn’t show onboarding to a returning account', !(await B.js(`!!document.querySelector('dialog.onboard[open]')`)));
@@ -598,6 +648,7 @@ async function phaseSync(A) {
   await B.js(`document.querySelector('.nav [data-tab="inbox"]').click()`); await sleep(200);
   check('a task added on A shows up in B’s Inbox', (await inboxRows(B)).some(r => /Group meeting prep/.test(r)));
   await B.js(`document.querySelector('.nav [data-tab="semester"]').click()`);
+  check('with sync on, every change is also saved on this computer', (await A.js(`localStorage.getItem('ssync-courses-v1') || ''`)).includes('Edited on A'));
   check('just opening the account never counts as an edit', ![...cloud.values()].some(b => b.json && b.json.includes('"title":"Lab Report 2"')) && !(await B.js(`(localStorage.getItem('ssync-snapshots-v1') || '').includes('two devices')`)));
 
   console.log('\n# The same course edited on both');
@@ -638,8 +689,11 @@ async function phaseSync(A) {
   console.log('\n# Signing out');
   await A.click('#accountBtn'); await sleep(200);
   const p = A.loaded(); await A.click('#signOutBtn'); await p; await sleep(1500);
-  check('signing out removes the account’s copy from this computer', !(await A.js(`!!localStorage.getItem('ssync-account-cache-v1')`)));
+  check('signing out keeps your courses on this computer', (await A.js(`document.querySelectorAll('#coursebar [data-view]').length`)) === before - 1 && !(await A.js(`!!localStorage.getItem('ssync-account-cache-v1')`)));
   check('and goes back to saving on this computer', /this computer/.test(await A.saveStatus()), await A.saveStatus());
+  // Legacy: a computer that was syncing before consent existed keeps syncing.
+  await B.js(`localStorage.removeItem('ssync-sync-consent-user-1')`); await B.reload();
+  check('a computer that was already syncing keeps syncing after the update', /account/.test(await B.saveStatus()), await B.saveStatus());
 
   console.log('\n# A computer with its own courses signs into an account that has some');
   const C = await newWindow('persist:device-c');
@@ -651,10 +705,35 @@ async function phaseSync(A) {
   await C.flushed();
   await C.click('#accountBtn'); await sleep(200);
   await C.js(`(() => { document.getElementById('authEmail').value = 'student@example.com'; document.getElementById('authPass').value = 'correct horse'; document.getElementById('authForm').requestSubmit(); })()`);
-  check('asks before adding them', /Courses on this computer/.test(await C.until(`document.querySelector('dialog.account[open]') && /Courses on this computer/.test(document.querySelector('dialog.account').innerText) && document.querySelector('dialog.account').innerText`)));
-  const p2 = C.loaded(); await C.click('#mergeYes'); await p2; await sleep(1500);
-  check('“Add them” puts the course in the account', [...cloud.values()].some(b => b.json && /CHEM 110/.test(b.json)));
+  const askC = await syncDialog(C);
+  check('asks before adding them', /This computer has 1 of its own/.test(askC) && /CHEM 110/.test(askC), askC);
+  const p2 = C.loaded(); await C.click('[data-sc="add"]'); await p2; await sleep(1500);
+  check('“Add mine to the account” puts the course in the account', [...cloud.values()].some(b => b.json && /CHEM 110/.test(b.json)));
   check('samples from this computer aren’t added to an existing account', ![...cloud.values()].some(b => b.json && /"sample":true/.test(b.json)));
+  check('and C now shows the account’s courses too', /BIO 150|ECON 101/.test(await C.js(`document.getElementById('coursebar').innerText`)));
+  await C.click('#accountBtn'); await sleep(200);
+  await C.js(`document.getElementById('wipeLocal').checked = true`);
+  { const p = C.loaded(); await C.click('#signOutBtn'); await p; await sleep(1500); }
+  check('signing out with “remove from this computer” clears it', !(await C.js(`!!localStorage.getItem('ssync-courses-v1') && /CHEM 110/.test(localStorage.getItem('ssync-courses-v1'))`)) && !/CHEM 110/.test(await C.js(`document.getElementById('coursebar').innerText`)));
+
+  console.log('\n# Choosing the account’s courses keeps this computer’s in a backup');
+  const E = await newWindow('persist:device-e');
+  await E.click('[data-ob="skip"]');
+  await E.js(`document.getElementById('addCourse').click()`);
+  await E.js(`document.getElementById('syllabusInput').value = 'PHYS 101: Physics\\nGRADING\\nFinal exam ... 100%\\nDec 12 Final exam'`);
+  await E.click('#useLocal'); await E.click('#parseBtn');
+  await E.until(`/PHYS 101/.test(document.getElementById('coursebar').innerText) && !document.getElementById('parseBtn').disabled`, 15000);
+  await E.js(`document.querySelectorAll('#coursebar [data-view]').length && document.getElementById('clearSamples') && document.getElementById('clearSamples').click()`); await E.flushed();
+  await E.click('#accountBtn'); await sleep(200);
+  await E.js(`(() => { document.getElementById('authEmail').value = 'student@example.com'; document.getElementById('authPass').value = 'correct horse'; document.getElementById('authForm').requestSubmit(); })()`);
+  await syncDialog(E);
+  { const p = E.loaded(); await E.click('[data-sc="use"]'); await p; await E.until(`!!document.querySelector('#coursebar [data-view]')`); await sleep(1500); }
+  check('“Use the account’s courses” shows the account’s', !/PHYS 101/.test(await E.js(`document.getElementById('coursebar').innerText`)) && /BIO 150|ECON 101/.test(await E.js(`document.getElementById('coursebar').innerText`)));
+  check('and this computer’s course is kept in a safety copy and a backup file', /PHYS 101/.test(await E.js(`localStorage.getItem('ssync-snapshots-v1') || ''`)) && fs.readdirSync(path.join(TMP, 'profile', 'Backups')).some(n => /before-account-switch/.test(n) && /PHYS 101/.test(fs.readFileSync(path.join(TMP, 'profile', 'Backups', n), 'utf8'))));
+  check('nothing from it was uploaded', ![...cloud.values()].some(b => b.json && /PHYS 101/.test(b.json)));
+  for (const D of [E]) D.errors.forEach(e => A.errors.push(e));
+  if (!process.argv.includes('--keep')) E.win.destroy();
+  await phaseUpgrade(A);
   for (const D of [B, C]) D.errors.forEach(e => A.errors.push(e));
   if (!process.argv.includes('--keep')) { B.win.destroy(); C.win.destroy(); }
 }

@@ -65,6 +65,7 @@ Runs the real app on a throwaway profile with a fake Claude API and a fake accou
 - **Backup file:** **Your data → Export backup** (or `⌘⇧B` / `Ctrl+Shift+B`) saves one `.json` file with every course, score, study set and setting. **Restore from a file** asks whether to replace what you have or add the courses you don't have yet.
 - **Daily backups:** the app also writes one to its `Backups` folder each day you use it and keeps the last 30 (**Your data → Open Backups folder**).
 - **Safety copies:** taken automatically before anything that removes data (removing a course, clearing samples, marking past deadlines done, deleting a study set, restoring, Start over) and when the same thing was edited on two computers. Most of those also show an **Undo** button.
+- **Upgrading:** the first time a version with local-first storage starts, it saves the exact data it finds to a `SemesterSync-before-local-first-….json` file in the Backups folder before writing anything. That file can be restored from **Your data** like any backup.
 - **Damaged data:** saved courses are read one at a time, so one damaged entry is skipped instead of losing the semester. The damaged data is kept and the app says what happened.
 - **Spreadsheet:** **Your data → Deliverables as a spreadsheet** exports every deliverable as `.csv`.
 
@@ -114,10 +115,11 @@ People can create an account (email + password) so their courses sync to that ac
 How it works:
 
 - Sign-in happens in the main process (`src/cloud.js`). The session token is encrypted with the system keychain and kept in the app's data folder, so people stay signed in.
-- The first time someone creates an account or signs in to an empty account, the courses already on that computer move into it. Signing into an account that already has courses asks first: **Add them** (this computer's own courses join the account; sample courses never do) or **Keep separate**.
+- **Local first.** The computer always keeps a complete copy of everything, signed in or not, and every feature works without an account or a connection.
+- **Nothing is uploaded without asking.** After signing in, SemesterSync shows what would be uploaded and asks: **Upload and turn on sync**, **Add mine to the account** / **Use the account's courses** (when both have courses), or **Not now**, which keeps everything on the computer with sync off. Sync can be turned on or off any time in **Your data**. Choosing the account's courses keeps the computer's own in a safety copy and a backup file first.
 - Each course, study set and the settings are separate documents. Every save first reads the account: a document only another computer changed is taken as is; when both changed it, the newer edit wins and the other copy goes to **Your data → Safety copies**. Open windows pick up changes from other computers when you switch back to them and every couple of minutes.
 - Offline, changes save on the computer and the status says **Offline**. The app retries on its own (5 s, 15 s, 30 s, then every minute or two) and syncs when the connection is back, even after a restart.
-- Signing out removes the account's copy from that computer and returns the app to the courses saved there before.
+- Signing out keeps the courses on the computer, so work can continue offline. On a shared computer, tick **Also remove my courses, settings and backups from this computer** when signing out.
 - **Forgot password** emails a code; people type it into the app with a new password.
 - **Continue with Google** opens Google in the browser and finishes sign-in in the app (PKCE, so the login code is useless to anyone else).
 
