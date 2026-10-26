@@ -19,4 +19,4 @@ export EMAIL_BACKEND=memory
 PY="${PYTHON:-.venv/bin/python}"
 "$(dirname "$PY")/alembic" upgrade head  # the plain command, as CI and the Docker image run it
 "$PY" -m alembic check  # the migration matches app/models.py
-"$PY" -m pytest -q "$@"
+"$(dirname "$PY")/pytest" -q "$@"  # the plain command, as CI runs it
