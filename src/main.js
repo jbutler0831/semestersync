@@ -256,6 +256,7 @@ ipcMain.handle('file:save', async (_e, { name, text, open }) => {
 /* ---------- Daily backups in the app's data folder ---------- */
 const backupDir = () => path.join(app.getPath('userData'), 'Backups');
 const BACKUP_RE = /^SemesterSync-\d{4}-\d{2}-\d{2}\.json$/;
+const ANY_BACKUP_RE = /^SemesterSync-(?:[a-z-]{3,40}-)?\d{4}-\d{2}-\d{2}(?:-\d{6})?\.json$/;
 ipcMain.handle('backup:auto', async (_e, text) => {
   if (typeof text !== 'string' || text.length > 100 * 1024 * 1024) return { ok: false };
   const d = new Date(), day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -267,15 +268,29 @@ ipcMain.handle('backup:auto', async (_e, text) => {
   for (const n of names.slice(30)) await fs.unlink(path.join(backupDir(), n)).catch(() => {});
   return { ok: true };
 });
+// A named backup, kept alongside the daily ones (e.g. before an upgrade or an account switch).
+ipcMain.handle('backup:write', async (_e, { name, text }) => {
+  if (!/^[a-z-]{3,40}$/.test(String(name)) || typeof text !== 'string' || text.length > 100 * 1024 * 1024) return { ok: false };
+  const d = new Date(), stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}${String(d.getSeconds()).padStart(2, '0')}`;
+  try {
+    await fs.mkdir(backupDir(), { recursive: true });
+    const file = path.join(backupDir(), `SemesterSync-${name}-${stamp}.json`);
+    await fs.writeFile(file + '.tmp', text, 'utf8');
+    await fs.rename(file + '.tmp', file);
+    return { ok: true, file: path.basename(file) };
+  } catch { return { ok: false }; }
+});
+// Removes this app's backup files (only when the person asks, when signing out and clearing this computer).
+ipcMain.handle('backup:clear', async () => { await fs.rm(backupDir(), { recursive: true, force: true }); return { ok: true }; });
 ipcMain.handle('backup:list', async () => {
   try {
-    const names = (await fs.readdir(backupDir())).filter(n => BACKUP_RE.test(n)).sort().reverse();
+    const names = (await fs.readdir(backupDir())).filter(n => ANY_BACKUP_RE.test(n)).sort((a, b) => b.localeCompare(a));
     const files = await Promise.all(names.map(async name => ({ name, mtime: (await fs.stat(path.join(backupDir(), name))).mtimeMs })));
     return { ok: true, files };
   } catch { return { ok: true, files: [] }; }
 });
 ipcMain.handle('backup:read', async (_e, name) => {
-  if (!BACKUP_RE.test(String(name))) return { ok: false };
+  if (!ANY_BACKUP_RE.test(String(name))) return { ok: false };
   try { return { ok: true, text: await fs.readFile(path.join(backupDir(), name), 'utf8') }; } catch { return { ok: false }; }
 });
 ipcMain.handle('backup:open-folder', async () => { await fs.mkdir(backupDir(), { recursive: true }); await shell.openPath(backupDir()); return { ok: true }; });

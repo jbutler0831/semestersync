@@ -58,6 +58,8 @@ contextBridge.exposeInMainWorld('desktop', {
   files: { save: (name, text, open) => ipcRenderer.invoke('file:save', { name, text, open }) },
   backup: {
     auto: text => ipcRenderer.invoke('backup:auto', text),
+    write: (name, text) => ipcRenderer.invoke('backup:write', { name, text }),
+    clear: () => ipcRenderer.invoke('backup:clear'),
     list: () => ipcRenderer.invoke('backup:list'),
     read: name => ipcRenderer.invoke('backup:read', name),
     openFolder: () => ipcRenderer.invoke('backup:open-folder'),
