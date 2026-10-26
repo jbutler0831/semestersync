@@ -41,7 +41,7 @@ Updating keeps your courses, settings and sign-in.
 
 The first launch opens a short welcome guide: start with your own syllabus, explore sample courses or restore a backup; what works offline and what uses Claude; accounts (optional); and your study hours. **Help → Welcome Guide** shows it again.
 
-Claude features (photo scanning, study sets, coach) need a Claude API key in Settings. Study rooms use Supabase Realtime (on by default in new projects); only a name, current task and timer are shared, and nothing is stored.
+Claude features (photo scanning, study sets, coach) need a Claude API key in Settings. Study rooms use SemesterSync's own server and don't need an account; only a name, current task, timer and chat are shared, and nothing is stored.
 
 ## Run it while developing
 
@@ -122,13 +122,13 @@ To run the server locally, see [`backend/README.md`](backend/README.md).
 - Then the old sign-in is removed (`session.bin` is deleted) and a note explains what happened.
 - If the old account can't be reached and the computer has no copy of it, nothing changes and it tries again on the next start.
 
-Study rooms still use Supabase Realtime for now (nothing is stored there). They move to SemesterSync's own server in a later stage, and then the Supabase project can be deleted.
+This copy is the only thing still using Supabase. It stays until people have had time to update (see `docs/stage5-release-plan.md`); then `src/legacy.js` and the Supabase project go.
 
 ## Build installers
 
 ```bash
-npm run dist:mac   # dist/SemesterSync-1.4.0-universal.dmg (Intel + Apple silicon)
-npm run dist:win   # dist/SemesterSync-Setup-1.4.0.exe (x64 + arm64)
+npm run dist:mac   # dist/SemesterSync-1.5.0-universal.dmg (Intel + Apple silicon)
+npm run dist:win   # dist/SemesterSync-Setup-1.5.0.exe (x64 + arm64)
 scripts/verify-installer.sh   # installs/mounts the build, starts it on a throwaway profile, checks signing
 ```
 
@@ -152,8 +152,9 @@ After adding them, set the repository variable `REQUIRE_SIGNED` to `1` so a rele
 |---|---|
 | `src/main.js` | Window, menus, Claude API calls, settings, saving files, daily backups, original syllabus files |
 | `src/account.js` | Accounts and sync requests to SemesterSync's own API; keeps the session token |
-| `src/legacy.js` | Study rooms (Supabase Realtime, for now) and the one-time copy of old Supabase accounts |
-| `src/config.json` | The account server address (`apiUrl`), and the Supabase project used by study rooms |
+| `src/rooms.js` | Study rooms: one WebSocket per room to SemesterSync's own API |
+| `src/legacy.js` | The one-time copy of old Supabase accounts |
+| `src/config.json` | The SemesterSync server address (`apiUrl`), and the old Supabase project (only for copying old accounts) |
 | `backend/` | The account server (FastAPI + PostgreSQL); see `backend/README.md` |
 | `supabase/schema.sql` | The old account database (only for the old accounts still being copied) |
 | `src/preload.js` | The only bridge between the page and the main process (context isolation on, no Node in the page) |

@@ -2730,7 +2730,7 @@ function roomPrefs() { try { return JSON.parse(localStorage.getItem(ROOM_PREF)) 
 function saveRoomPrefs(p) { try { localStorage.setItem(ROOM_PREF, JSON.stringify(p)); } catch (_) {} }
 const cleanName = s => String(s || '').replace(/[\u0000-\u001f]/g, '').trim().slice(0, 32);
 const newCode = () => Array.from({ length: 6 }, () => 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 31)]).join('');
-// Same calls on the web (Claude's room capability) and in the desktop app (Supabase Realtime).
+// Same calls on the web (Claude's room capability) and in the desktop app (SemesterSync's own server).
 async function openRoom(code) {
   if (window.desktop && window.desktop.rooms) {
     const r = window.desktop.rooms;

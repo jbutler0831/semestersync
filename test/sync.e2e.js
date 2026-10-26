@@ -147,7 +147,27 @@ app.on('browser-window-created', (_e, win) => {
       await B.syncNow();
       check('the other computer stops syncing and keeps its course', !(await B.js(`window.CloudSync.isOn()`)) && (await B.js(`document.getElementById('coursebar').innerText`)).includes('BIO 150'));
       check('so does this one', !(await A.js(`window.CloudSync.isOn()`)) && (await A.js(`document.getElementById('coursebar').innerText`)).includes('BIO 150'));
-      check('the server never logged course content', !/Edited on A|Final from|A offline/.test(errOut));
+      console.log('\n# Study rooms through the server');
+      const people = D => D.js(`document.getElementById('roomPeople').innerText`);
+      const joinRoom = async (D, name, code) => {
+        await D.js(`document.querySelector('[data-tab="rooms"]').click(); document.getElementById('roomName').value = ${JSON.stringify(name)}; document.getElementById('roomCode').value = ${JSON.stringify(code)}; document.getElementById('roomForm').requestSubmit(); 1`);
+      };
+      await joinRoom(A, 'Ana', '');
+      const code = await A.until(`!document.getElementById('roomLive').hidden && document.getElementById('roomCodeShow').textContent`);
+      check('starting a room gives a code', /^[A-Z0-9]{6}$/.test(code || ''), code);
+      await joinRoom(B, 'Ben', code);
+      check('both people see each other', !!(await A.until(`/Ben/.test(document.getElementById('roomPeople').innerText)`)) && /Ana \(you\)/.test(await A.js(`document.getElementById('roomPeople').innerText`)) && !!(await B.until(`/Ana/.test(document.getElementById('roomPeople').innerText) && /Ben \\(you\\)/.test(document.getElementById('roomPeople').innerText)`)), [await people(A), await people(B)]);
+      await A.click('#timerFocus');
+      check('a focus timer shows for the other person', !!(await B.until(`/Focusing/.test(document.getElementById('roomPeople').innerText)`)), await people(B));
+      await A.js(`document.getElementById('roomChatIn').value = 'hello from A'; document.getElementById('roomChatForm').requestSubmit(); 1`);
+      check('chat reaches the other person, with the sender’s name', !!(await B.until(`/Ana\\s*hello from A/.test(document.getElementById('roomChat').innerText)`)), await B.js(`document.getElementById('roomChat').innerText`));
+      await B.click('#roomLeave');
+      check('leaving takes them off the list', !!(await A.until(`!/Ben/.test(document.getElementById('roomPeople').innerText)`)), await people(A));
+      await A.click('#roomLeave');
+      await joinRoom(B, 'Ben', 'AB');
+      check('a short code is refused', /at least 4/.test(await B.until(`document.getElementById('roomMsg').textContent`) || ''));
+
+      check('the server never logged course content, names or chat', !/Edited on A|Final from|A offline|hello from A|Ana|Ben/.test(errOut + out));
       const errs = [...A.errors, ...B.errors].filter(e => !/Failed to load resource|fonts\.g/.test(e));
       check('no errors in the page console', !errs.length, errs);
     } catch (e) { check('test run finished without crashing', false, String(e && e.stack || e)); }

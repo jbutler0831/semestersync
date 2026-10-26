@@ -3,6 +3,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const Anthropic = require('@anthropic-ai/sdk');
 const legacy = require('./legacy');
+const rooms = require('./rooms');
 const account = require('./account');
 
 const isMac = process.platform === 'darwin';
@@ -198,6 +199,7 @@ ipcMain.handle('claude:ask', async (event, { id, messages, images, schema, effor
 
 account.register(ipcMain);
 legacy.register(ipcMain);
+rooms.register(ipcMain);
 
 /* ---------- Settings IPC ---------- */
 ipcMain.handle('settings:get', async () => {

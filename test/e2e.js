@@ -274,6 +274,8 @@ async function phaseLocal(A) {
   await toggle('quiet', false);
   await A.click('#remindBody [data-at="168"]');
   await A.setVal('#remindBody [data-r="summaryTime"]', hhmm(new Date(Date.now() - 60000)));
+  // Between 8:00 and noon the default 8:00 summary already went out when the app started; forget it so this test doesn't depend on the time of day.
+  await A.js(`(() => { const k = 'ssync-notified-v2'; const s = JSON.parse(localStorage.getItem(k) || '[]').filter(x => !/^summary\|/.test(x)); localStorage.setItem(k, JSON.stringify(s)); })()`);
   // Something big due tomorrow, to trigger a high-priority warning.
   await A.js(`document.querySelector('.nav [data-tab="semester"]').click()`);
   await A.click('#addRow'); await sleep(100);

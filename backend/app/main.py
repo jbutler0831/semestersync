@@ -7,7 +7,7 @@ from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from .config import settings
 from .db import engine
-from .routers import account, auth, sync
+from .routers import account, auth, rooms, sync
 
 MAX_BODY = 16 * 1024
 MAX_SYNC_BODY = 4 * 1024 * 1024  # a batch of synced documents
@@ -19,6 +19,7 @@ app = FastAPI(title="SemesterSync API", version="0.1.0",
 app.include_router(auth.router)
 app.include_router(account.router)
 app.include_router(sync.router)
+app.include_router(rooms.router)
 
 
 def error(status: int, code: str, message: str, headers=None) -> JSONResponse:

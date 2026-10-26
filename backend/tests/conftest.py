@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app import email as mail  # noqa: E402
 from app.db import engine  # noqa: E402
 from app.main import app  # noqa: E402
+from app.routers import rooms  # noqa: E402
 
 PASSWORD = "correct horse battery"
 
@@ -18,6 +19,8 @@ def clean():
     with engine().begin() as c:
         c.execute(text("TRUNCATE users, sessions, email_codes, rate_events, sync_docs RESTART IDENTITY CASCADE"))
     mail.outbox.clear()
+    rooms.rooms.clear()
+    rooms.per_ip.clear()
     yield
 
 

@@ -190,4 +190,4 @@ function register(ipcMain) {
   for (const [ch, fn] of Object.entries(routes)) ipcMain.handle(ch, (_e, args) => api[fn](args || {}));
 }
 
-module.exports = { register, api };
+module.exports = { register, api, apiBase };
