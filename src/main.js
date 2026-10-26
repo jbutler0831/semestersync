@@ -2,7 +2,8 @@ const { app, BrowserWindow, ipcMain, shell, dialog, Menu, Tray, nativeImage, saf
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const Anthropic = require('@anthropic-ai/sdk');
-const cloud = require('./cloud');
+const legacy = require('./legacy');
+const account = require('./account');
 
 const isMac = process.platform === 'darwin';
 const SETTINGS_FILE = () => path.join(app.getPath('userData'), 'settings.json');
@@ -195,7 +196,8 @@ ipcMain.handle('claude:ask', async (event, { id, messages, images, schema, effor
   }
 });
 
-cloud.register(ipcMain);
+account.register(ipcMain);
+legacy.register(ipcMain);
 
 /* ---------- Settings IPC ---------- */
 ipcMain.handle('settings:get', async () => {

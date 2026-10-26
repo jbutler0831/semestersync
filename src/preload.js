@@ -31,13 +31,25 @@ contextBridge.exposeInMainWorld('desktop', {
   account: {
     status: () => ipcRenderer.invoke('account:status'),
     signUp: (email, password) => ipcRenderer.invoke('account:sign-up', { email, password }),
+    verify: (email, code) => ipcRenderer.invoke('account:verify', { email, code }),
+    resend: email => ipcRenderer.invoke('account:resend', { email }),
     signIn: (email, password) => ipcRenderer.invoke('account:sign-in', { email, password }),
     signOut: () => ipcRenderer.invoke('account:sign-out'),
-    google: () => ipcRenderer.invoke('account:google'),
-    cancelGoogle: () => ipcRenderer.send('account:google-cancel'),
     requestReset: email => ipcRenderer.invoke('account:reset-request', { email }),
     completeReset: (email, code, password) => ipcRenderer.invoke('account:reset-complete', { email, code, password }),
+    changePassword: (current, next) => ipcRenderer.invoke('account:change-password', { current, next }),
+    sessions: () => ipcRenderer.invoke('account:sessions'),
+    revokeSession: id => ipcRenderer.invoke('account:revoke-session', { id }),
+    revokeOthers: () => ipcRenderer.invoke('account:revoke-others'),
+    deleteAccount: password => ipcRenderer.invoke('account:delete', { password }),
   },
+  // A one-time copy of an old (Supabase) account's courses to this computer.
+  legacy: {
+    status: () => ipcRenderer.invoke('legacy:status'),
+    export: () => ipcRenderer.invoke('legacy:export'),
+    forget: () => ipcRenderer.invoke('legacy:forget'),
+  },
+  // Cloud sync (not available until sync is built on our own server; the page only uses it when status says so).
   cloud: {
     list: () => ipcRenderer.invoke('cloud:list'),
     set: (id, body) => ipcRenderer.invoke('cloud:set', { id, body }),

@@ -44,8 +44,9 @@ let cloudDown = false;
 const users = new Map(); // webContents id -> user or null
 const USER = { id: 'user-1', email: 'student@example.com' };
 const who = e => users.get(e.sender.id) || null;
-for (const ch of ['account:status', 'account:sign-in', 'account:sign-up', 'account:sign-out', 'cloud:list', 'cloud:set', 'cloud:delete']) ipcMain.removeHandler(ch);
-ipcMain.handle('account:status', e => ({ configured: true, user: who(e) }));
+// Sync isn't offered by the real account server yet (Stage 4); these tests keep the page's sync code working for when it is.
+for (const ch of ['account:status', 'account:sign-in', 'account:sign-up', 'account:sign-out', 'cloud:list', 'cloud:set', 'cloud:delete', 'legacy:status', 'legacy:export', 'legacy:forget']) ipcMain.removeHandler(ch);
+ipcMain.handle('account:status', e => ({ configured: true, user: who(e), sync: true }));
 ipcMain.handle('account:sign-in', e => { users.set(e.sender.id, USER); return { ok: true, user: USER }; });
 ipcMain.handle('account:sign-up', e => { users.set(e.sender.id, USER); return { ok: true, user: USER }; });
 ipcMain.handle('account:sign-out', e => { users.set(e.sender.id, null); return { ok: true }; });
@@ -53,6 +54,12 @@ const down = () => ({ ok: false, message: 'Couldn\'t reach the account server. C
 ipcMain.handle('cloud:list', e => { if (!who(e)) return { ok: false, message: 'Not signed in' }; if (cloudDown) return down(); return { ok: true, docs: [...cloud].map(([id, body]) => ({ id, body: JSON.parse(JSON.stringify(body)) })) }; });
 ipcMain.handle('cloud:set', (e, { id, body }) => { if (!who(e)) return { ok: false }; if (cloudDown) return down(); cloud.set(id, JSON.parse(JSON.stringify(body))); return { ok: true }; });
 ipcMain.handle('cloud:delete', (e, { id }) => { if (!who(e)) return { ok: false }; if (cloudDown) return down(); cloud.delete(id); return { ok: true }; });
+
+/* ---------- Fake old (Supabase) account, per window ---------- */
+const oldAccounts = new Map(); // webContents id -> { email, docs, down, forgot }
+ipcMain.handle('legacy:status', e => { const o = oldAccounts.get(e.sender.id); return o && !o.forgot ? { session: true, email: o.email } : { session: false }; });
+ipcMain.handle('legacy:export', e => { const o = oldAccounts.get(e.sender.id); if (!o || o.forgot) return { ok: false }; if (o.down) return { ok: false, message: 'offline' }; return { ok: true, docs: o.docs.map(([id, json]) => ({ id, body: { json, at: 1 } })) }; });
+ipcMain.handle('legacy:forget', e => { const o = oldAccounts.get(e.sender.id); if (o) o.forgot = true; return { ok: true }; });
 
 /* ---------- Helpers ---------- */
 const results = [];
@@ -605,6 +612,44 @@ async function phaseUpgrade(A) {
   if (!process.argv.includes('--keep')) F.win.destroy();
 }
 
+async function phaseOldAccount(A) {
+  console.log('\n# Upgrading while signed in to an old (Supabase) account');
+  const course = (id, code, title, order) => JSON.stringify({ id, code, title: code + ' course', text: '', categories: [], items: [{ id: id + '-1', cid: id, line: -1, title, notes: '', type: 'Homework', date: '2026-11-20', time: '23:59', weight: 0, hours: 1, conf: 99, sync: true }], color: 0, parser: 'local', order });
+  const G = await newWindow('persist:device-g');
+  const stale = [course('cL', 'LOCAL 1', 'Only on this computer', 5)];
+  const cache = { uid: 'old-1', dirtySince: 0,
+    docs: [['course-cA', course('cA', 'ACCT 1', 'Edited here while offline', 1)], ['course-cB', course('cB', 'ACCT 2', 'Old B', 2)], ['extras', JSON.stringify({ planner: { hours: [2, 2, 2, 2, 2, 2, 2], block: 1.5 } })]],
+    base: [['course-cA', { r: course('cA', 'ACCT 1', 'Original A', 1), l: course('cA', 'ACCT 1', 'Original A', 1) }], ['course-cB', { r: course('cB', 'ACCT 2', 'Old B', 2), l: course('cB', 'ACCT 2', 'Old B', 2) }]] };
+  const remote = [['meta', '{}'], ['course-cA', course('cA', 'ACCT 1', 'Changed on another computer', 1)], ['course-cB', course('cB', 'ACCT 2', 'Newer B from the account', 2)], ['course-cC', course('cC', 'ACCT 3', 'Only in the account', 3)],
+    ['deck-dz', JSON.stringify({ id: 'dz', cid: 'cC', name: 'Account deck', cards: [{ id: 'k1', q: 'Q?', a: 'A' }], quiz: [], guide: '', created: 1 })]];
+  oldAccounts.set(G.win.webContents.id, { email: 'old@example.com', docs: remote });
+  await G.js(`localStorage.clear(); localStorage.setItem('ssync-courses-v1', ${JSON.stringify(JSON.stringify(stale))}); localStorage.setItem('ssync-account-cache-v1', ${JSON.stringify(JSON.stringify(cache))}); localStorage.setItem('ssync-sync-consent-old-1', '1'); localStorage.setItem('ssync-onboarded', '1'); 1`);
+  await G.reload();
+  const bar = await G.js(`document.getElementById('coursebar').innerText`);
+  check('the old account’s courses are copied to this computer', /ACCT 1/.test(bar) && /ACCT 2/.test(bar) && /ACCT 3/.test(bar), bar);
+  check('this computer’s own course is kept too', /LOCAL 1/.test(bar), bar);
+  const saved = await G.js(`localStorage.getItem('ssync-courses-v1')`);
+  check('edits made here that never reached the account are kept', saved.includes('Edited here while offline') && !saved.includes('Changed on another computer'));
+  check('the account’s newer copy is used where this computer hadn’t changed it', saved.includes('Newer B from the account') && !saved.includes('Old B'));
+  check('the other version of a course changed in both places is a safety copy', (await G.js(`localStorage.getItem('ssync-snapshots-v1') || ''`)).includes('Changed on another computer'));
+  check('study sets from the account come too', /Account deck/.test(await G.js(`localStorage.getItem('ssync-extras-v1') || ''`)));
+  check('a raw copy of the old account is saved to a backup file first', fs.readdirSync(path.join(TMP, 'profile', 'Backups')).some(n => /old-account-copy/.test(n) && /Only in the account/.test(fs.readFileSync(path.join(TMP, 'profile', 'Backups', n), 'utf8'))));
+  check('it explains what happened', /old@example\.com/.test(await G.js(`(document.getElementById('migratedBanner') || {}).innerText || ''`)));
+  check('the old sign-in is removed and nothing syncs', oldAccounts.get(G.win.webContents.id).forgot && !(await G.js(`!!localStorage.getItem('ssync-account-cache-v1') || !!localStorage.getItem('ssync-sync-consent-old-1')`)) && /this computer/.test(await G.saveStatus()), await G.saveStatus());
+  await G.reload();
+  check('it happens once', !(await G.js(`!!document.getElementById('migratedBanner')`)) && /ACCT 3/.test(await G.js(`document.getElementById('coursebar').innerText`)));
+
+  const H = await newWindow('persist:device-h');
+  oldAccounts.set(H.win.webContents.id, { email: 'old@example.com', docs: remote, down: true });
+  await H.js(`localStorage.clear(); localStorage.setItem('ssync-courses-v1', ${JSON.stringify(JSON.stringify(stale))}); localStorage.setItem('ssync-onboarded', '1'); 1`);
+  await H.reload();
+  check('offline with no cached copy, nothing changes and it tries again later', !(await H.js(`!!localStorage.getItem('ssync-migrated-supabase')`)) && !oldAccounts.get(H.win.webContents.id).forgot && /LOCAL 1/.test(await H.js(`document.getElementById('coursebar').innerText`)));
+  oldAccounts.get(H.win.webContents.id).down = false;
+  await H.reload();
+  check('and copies the courses once the old account answers', /ACCT 3/.test(await H.js(`document.getElementById('coursebar').innerText`)) && /LOCAL 1/.test(await H.js(`document.getElementById('coursebar').innerText`)));
+  for (const D of [G, H]) { D.errors.forEach(e => A.errors.push(e)); if (!process.argv.includes('--keep')) D.win.destroy(); }
+}
+
 async function phaseSync(A) {
   console.log('\n# Signing in never uploads without asking');
   const mine = await A.js(`[...document.querySelectorAll('#coursebar [data-view]')].slice(1).map(b => b.textContent.replace(/\\d+$/, ''))`);
@@ -734,6 +779,7 @@ async function phaseSync(A) {
   for (const D of [E]) D.errors.forEach(e => A.errors.push(e));
   if (!process.argv.includes('--keep')) E.win.destroy();
   await phaseUpgrade(A);
+  await phaseOldAccount(A);
   for (const D of [B, C]) D.errors.forEach(e => A.errors.push(e));
   if (!process.argv.includes('--keep')) { B.win.destroy(); C.win.destroy(); }
 }

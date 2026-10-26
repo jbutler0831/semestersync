@@ -1036,6 +1036,54 @@ async function backupBeforeUpgrade() {
   }
   lsSet(FORMAT_KEY, String(LOCAL_FORMAT));
 }
+// Accounts moved off Supabase. Someone signed in to an old account gets its courses copied to this computer
+// once: fetched from the old account (a raw copy goes to a backup file first), merged with this computer's
+// own copy, and the old sign-in is removed. Offline with nothing cached, it waits for the next start.
+const MIGRATED_KEY = 'ssync-migrated-supabase';
+async function migrateOldAccount() {
+  const d = window.desktop;
+  if (!LOCAL_FIRST || !d.legacy || lsGet(MIGRATED_KEY)) return;
+  let cache = null; try { cache = JSON.parse(lsGet(CACHE_KEY) || 'null'); } catch (_) {}
+  if (!cache || !Array.isArray(cache.docs)) cache = null;
+  const st = await d.legacy.status().catch(() => ({ session: false }));
+  if (!st.session && !cache) { lsSet(MIGRATED_KEY, '1'); return; }
+  let remote = null;
+  if (st.session) {
+    const r = await d.legacy.export().catch(() => null);
+    if (r && r.ok) remote = r.docs.filter(x => x && typeof x.id === 'string' && x.body && typeof x.body.json === 'string').map(x => [x.id, x.body.json]);
+    else if (!cache && !(r && r.code === 'signed_out')) return;
+  }
+  if (remote && remote.length) {
+    const w = await d.backup.write('old-account-copy', JSON.stringify({ app: 'SemesterSync', kind: 'raw-before-upgrade', at: new Date().toISOString(), raw: { accountCache: JSON.stringify({ docs: remote }) } })).catch(() => null);
+    if (!w || !w.ok) return; // can't keep a safe copy yet: leave everything as it is and try next start
+  }
+  // This computer's last copy of the account (with edits not yet uploaded) wins; the old account fills in the rest.
+  const docs = new Map(cache ? cache.docs : []);
+  const base = new Map(cache && Array.isArray(cache.base) ? cache.base : []);
+  const others = [];
+  for (const [id, json] of remote || []) {
+    if (id === 'meta') continue;
+    const b = base.get(id), seen = b === undefined ? undefined : (typeof b === 'string' ? b : b.l);
+    if (!docs.has(id)) { if (b === undefined) docs.set(id, json); } // in base but gone here: it was deleted on this computer
+    else if (docs.get(id) !== json) { if (seen !== undefined && docs.get(id) === seen) docs.set(id, json); else others.push([id, json]); }
+  }
+  docs.delete('meta');
+  if (docs.size) {
+    const here = readLocal();
+    const mine = (here.courses || []).filter(c => !c.sample && !docs.has('course-' + c.id));
+    if ((here.courses || []).some(c => !c.sample)) snapshot('Before your old account’s courses were copied to this computer', { app: 'SemesterSync', format: 1, exported: new Date().toISOString(), courses: here.courses.map(c => JSON.parse(serialize(c))) });
+    const courseJson = [...docs].filter(([id]) => id.startsWith('course-')).map(([, j]) => j).concat(mine.map(serialize));
+    const ex = [...docs].filter(([id]) => !id.startsWith('course-'));
+    lsSet(STORE_KEY, JSON.stringify(courseJson));
+    if (ex.length) lsSet(EXTRAS_KEY, JSON.stringify(ex));
+    for (const [id, json] of others) if (id.startsWith('course-')) { try { snapshot('Other copy of ' + (JSON.parse(json).code || 'a course') + ' from your old account', { app: 'SemesterSync', format: 1, courses: [JSON.parse(json)] }); } catch (_) {} }
+  }
+  try { for (const k of Object.keys(localStorage)) if (k.startsWith('ssync-sync-consent-')) localStorage.removeItem(k); localStorage.removeItem(CACHE_KEY); } catch (_) {}
+  lsSet(OWNER_KEY, 'local');
+  lsSet(MIGRATED_KEY, '1');
+  await d.legacy.forget().catch(() => {});
+  store.migrated = { email: st.email || '', courses: [...docs.keys()].filter(k => k.startsWith('course-') && k !== 'course-inbox').length };
+}
 // Before an account's data replaces what's on this computer, keep a copy of what was here.
 // Also when this computer has no sync record for the account (first sync here, or signed out and back in):
 // whatever was edited here in the meantime is kept as a safety copy until real merging arrives.
@@ -1337,6 +1385,7 @@ async function initStore() {
   const api = window.claude && window.claude.use ? window.claude : null;
   let loaded = null, loadedExtras = [];
   await backupBeforeUpgrade();
+  await migrateOldAccount().catch(() => {});
   if (api) {
     try {
       const [db, user] = await Promise.all([api.use('db'), api.use('user')]);
@@ -1403,6 +1452,7 @@ async function initStore() {
   if (store.status === 'retry') { clearTimeout(store.timer); store.timer = setTimeout(store.unloaded ? retryLoad : flushSave, 5000); }
   paintSaveStatus();
   if (store.problem) showProblem(store.problem);
+  if (store.migrated) showMigrated(store.migrated);
   if (fresh && store.status !== 'retry') maybeOnboard();
   setTimeout(() => { checkReminders(); pushTray(); }, 5000);
   pushQuickContext(); drainQuick();
@@ -3112,7 +3162,7 @@ function openImport(b) {
 const dataDlg = makeDialog('wide data-dlg');
 function paintDataStatus() {
   const el = dataDlg.querySelector('#dataStatus'); if (!el) return;
-  const where = store.mode === 'db' ? `Synced to ${esc(acctName())}, with a complete copy ${HERE}.` : store.syncOff ? `Saved ${HERE}. You’re signed in, but cloud sync is off, so nothing is uploaded.` : store.mode === 'local' ? `Saved ${HERE} only.${window.desktop ? ' Sign in to keep it on every computer you use.' : ''}` : 'Not being saved: this view has no storage.';
+  const where = store.mode === 'db' ? `Synced to ${esc(acctName())}, with a complete copy ${HERE}.` : store.syncOff ? `Saved ${HERE}. You’re signed in, but cloud sync is off, so nothing is uploaded.` : store.mode === 'local' ? `Saved ${HERE} only.` : 'Not being saved: this view has no storage.';
   const last = store.lastOk ? `Last saved ${fmtDay(new Date(store.lastOk))}, ${clockTime(store.lastOk)}.` : '';
   const exp = extras.lastExport ? `Last backup file ${fmtDay(new Date(extras.lastExport))}.` : 'You haven’t exported a backup file yet.';
   el.innerHTML = `<div class="ds ${$('saveStatus') ? $('saveStatus').className.replace('save-status', '') : ''}"><b>${esc($('saveStatus') ? $('saveStatus').textContent : '')}</b><span>${where} ${last}</span><span>${exp}</span></div>`;
@@ -3211,6 +3261,13 @@ function openData() {
     if (k) window.desktop.backup.read(k.dataset.disk).then(res => { if (res.ok) { dataDlg.close(); importBackup(res.text); } else toast('Couldn’t read that backup.'); });
   });
   dataDlg.showModal();
+}
+function showMigrated(m) {
+  const el = document.createElement('div');
+  el.className = 'banner ok'; el.setAttribute('role', 'status'); el.id = 'migratedBanner';
+  el.innerHTML = `<div style="flex:1"><b>Your courses are now saved on this computer</b>SemesterSync accounts changed, so ${m.courses ? `the ${m.courses} course${m.courses === 1 ? '' : 's'} from` : 'everything in'} your old account${m.email ? ' (' + esc(m.email) + ')' : ''} ${m.courses === 1 ? 'was' : 'were'} copied here and you were signed out of it. Nothing was lost; a copy is also in Your data → Backups. You can create a new account any time, but you don’t need one.</div><button type="button" class="icon-btn" aria-label="Dismiss"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>`;
+  el.querySelector('.icon-btn').onclick = () => el.remove();
+  document.querySelector('main').prepend(el);
 }
 function showProblem(msg) {
   const el = document.createElement('div');
@@ -3389,7 +3446,7 @@ function paintOnboard() {
       ${desk && !ai ? '<div class="row"><button type="button" class="btn" data-ob="key">Add a Claude API key</button></div>' : ''}
       ${nav('next', 'Continue')}`,
     () => `<h2>Where your semester is saved</h2>
-      ${desk ? `<p class="hint" style="font-size:14px">Everything saves on this computer as you go, with a daily backup. Sign in to keep it on every computer you use, too. Accounts are optional and free.</p>
+      ${desk ? `<p class="hint" style="font-size:14px">Everything saves on this computer as you go, with a daily backup. You don’t need an account.</p>
         <div class="row"><button type="button" class="btn" data-ob="account">Sign in or create an account</button></div>
         <p class="hint">Already have courses in an account? Signing in asks what to do with the ones on this computer, so nothing is overwritten.</p>`
         : `<p class="hint" style="font-size:14px">${store.mode === 'db' ? 'Your semester saves to your Claude account as you go, so it’s there wherever you open SemesterSync.' : 'Your semester saves in this browser as you go. Export a backup file from <b>Your data</b> to move it or keep it safe.'}</p>`}

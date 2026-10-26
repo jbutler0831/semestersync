@@ -53,9 +53,9 @@
     return sample;
   }
 
-  // When someone is signed in, the page's saving goes to their account (cloud.js);
-  // signed out, `db` is null and the page keeps courses on this computer.
-  const account = d.account.status().catch(() => ({ configured: false, user: null }));
+  // The page keeps courses on this computer. Only when the account server offers sync (and the person
+  // agrees, see app.js) does saving also go to the account; until then `db` is null.
+  const account = d.account.status().catch(() => ({ configured: false, user: null, sync: false }));
   const fail = res => { throw { code: 'unavailable', message: res.message }; };
   const db = {
     collection: () => ({
@@ -74,8 +74,8 @@
   window.claude = {
     async use(name) {
       if (name === 'sample') return (await d.claude.available()) ? makeSample() : null;
-      const { user } = await account;
-      if (!user) return null;
+      const { user, sync } = await account;
+      if (!user || !sync) return null;
       if (name === 'db') return db;
       if (name === 'user') return { id: async () => user.id, can: async () => true, me: async () => ({ id: user.id, name: user.email }) };
       return null;
