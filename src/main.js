@@ -4,6 +4,7 @@ const path = require('node:path');
 const Anthropic = require('@anthropic-ai/sdk');
 const legacy = require('./legacy');
 const rooms = require('./rooms');
+const feedback = require('./feedback');
 const account = require('./account');
 
 const isMac = process.platform === 'darwin';
@@ -200,6 +201,7 @@ ipcMain.handle('claude:ask', async (event, { id, messages, images, schema, effor
 account.register(ipcMain);
 legacy.register(ipcMain);
 rooms.register(ipcMain);
+feedback.register(ipcMain);
 
 /* ---------- Settings IPC ---------- */
 ipcMain.handle('settings:get', async () => {
@@ -593,6 +595,7 @@ function buildMenu() {
       submenu: [
         { label: 'Welcome Guide', click: () => send('menu:welcome') },
         { label: 'Keyboard Shortcuts', click: () => send('menu:keys') },
+        { label: 'Send Feedback…', click: () => send('menu:feedback') },
         { type: 'separator' },
         { label: 'Get a Claude API Key', click: () => shell.openExternal('https://platform.claude.com/settings/keys') },
       ],

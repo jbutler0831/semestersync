@@ -863,6 +863,70 @@ async function phaseSync(A) {
   await phaseOldAccount(A);
 }
 
+// Help → Send Feedback, against a stand-in for Google Forms that records what arrives.
+async function phaseFeedback(A) {
+  console.log('\n# Send feedback');
+  const got = []; let reply = 200;
+  const srv = require('node:http').createServer((req, res) => {
+    let b = ''; req.on('data', c => { b += c; }); req.on('end', () => { got.push({ method: req.method, url: req.url, body: new URLSearchParams(b) }); res.writeHead(reply); res.end('<html>ok</html>'); });
+  });
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${srv.address().port}/forms/d/e/TESTFORM/viewform?usp=pp_url`;
+  const open = async () => { await A.js(`document.querySelector('dialog.feedback')?.close(); 1`); A.win.webContents.send('menu:feedback'); return A.until(`document.querySelector('dialog.feedback[open]') && document.querySelector('dialog.feedback').innerText`); };
+  const answer = (i, v) => A.js(`(() => { const t = document.getElementById('fbQ${i}'); t.value = ${JSON.stringify(v)}; return true; })()`);
+  // Clears the last message first, so each check sees this send's answer.
+  const send = () => A.js(`(() => { const m = document.getElementById('fbMsg'); m.hidden = true; m.textContent = ''; document.getElementById('fbSend').click(); return true; })()`);
+  const msg = () => A.until(`(() => { const m = document.getElementById('fbMsg'); return m && !m.hidden && m.textContent; })()`);
+
+  delete process.env.SEMESTERSYNC_FEEDBACK_URL;
+  let text = await open();
+  check('Help → Send Feedback opens the form with all six questions', ['college courses', 'track assignments', 'like most', 'confused you', 'every week', 'pay for additional'].every(q => text.includes(q)), text);
+  check('without a form set up, it says so and Send is off', /isn’t set up/.test(text) && await A.js(`document.getElementById('fbSend').disabled`));
+
+  process.env.SEMESTERSYNC_FEEDBACK_URL = base + Array.from({ length: 6 }, (_, i) => `&entry.${1000 + i}=Q${i + 1}`).join('');
+  await A.js(`document.querySelector('dialog.feedback').close(); document.getElementById('settingsBtn').click(); 1`);
+  await A.until(`document.querySelector('dialog.settings:not(.feedback)[open]')`);
+  await A.click('#feedbackLink');
+  text = await A.until(`document.querySelector('dialog.feedback[open]') && document.querySelector('dialog.feedback').innerText`);
+  check('Settings has a Send feedback link to the same form', /Send feedback/.test(text) && !(await A.js(`document.getElementById('fbSend').disabled`)) && !(await A.js(`!!document.querySelector('dialog.settings:not(.feedback)[open]')`)), text);
+  check('it says what is and isn’t sent', /optional/.test(text) && /nothing from your courses, grades or account/.test(text), text);
+  await send();
+  check('sending nothing asks for at least one answer, and sends nothing', /at least one/.test(await msg() || '') && got.length === 0);
+
+  await answer(0, 'BIO 150, CHEM 110');
+  await answer(3, '  The planner\r\nwas confusing  ');
+  await send();
+  check('skipped questions are fine; it says thanks when sent', !!(await A.until(`/Thank you/.test(document.querySelector('dialog.feedback').innerText)`)) && /Feedback sent/.test(await A.js(`document.getElementById('toast').textContent`)));
+  const sent = got[0] || { body: new URLSearchParams() };
+  check('it posts to the form’s formResponse address', sent.method === 'POST' && sent.url === '/forms/d/e/TESTFORM/formResponse', sent.url);
+  check('each answer goes to its question, trimmed; skipped ones aren’t sent', sent.body.get('entry.1000') === 'BIO 150, CHEM 110' && sent.body.get('entry.1003') === 'The planner\nwas confusing' && [...sent.body.keys()].length === 2, [...sent.body]);
+  const all = [...sent.body.values()].join(' ');
+  check('nothing else from the app is sent (no courses, grades, email or token)', !/Lab Report|Midterm|@example|token|sk-/.test(all) && [...sent.body.keys()].every(k => /^entry\.100[0-5]$/.test(k)));
+
+  // Too soon after a send, then the form refusing, then offline: answers stay, with a clear message.
+  await open();
+  await answer(4, 'Phone reminders');
+  await send();
+  check('sending twice within seconds is held back', /just sent/.test(await msg() || '') && got.length === 1);
+  await sleep(20500);
+  reply = 500;
+  await send();
+  check('if the form refuses it, it says so and keeps the answers', /didn’t accept/.test(await msg() || '') && (await A.js(`document.getElementById('fbQ4').value`)) === 'Phone reminders');
+  srv.close(); await new Promise(r => setTimeout(r, 200));
+  process.env.SEMESTERSYNC_FEEDBACK_URL = process.env.SEMESTERSYNC_FEEDBACK_URL.replace(/:\d+\//, ':9/');
+  await send();
+  check('offline, it says to check the connection and keeps the answers', !!(await A.until(`/internet connection.*still here/.test(document.getElementById('fbMsg').textContent)`, 20000)) && (await A.js(`document.getElementById('fbQ4').value`)) === 'Phone reminders', await A.js(`document.getElementById('fbMsg').textContent`));
+  check('Copy answers is there for sending another way', !!(await A.js(`!!document.getElementById('fbCopy')`)));
+  // A link that isn't a Google Form (or is missing a question) counts as not set up.
+  process.env.SEMESTERSYNC_FEEDBACK_URL = 'https://evil.example/forms/d/e/X/viewform?entry.1=Q1&entry.2=Q2&entry.3=Q3&entry.4=Q4&entry.5=Q5&entry.6=Q6';
+  text = await open();
+  check('only a real Google Forms link is used', /isn’t set up/.test(text));
+  process.env.SEMESTERSYNC_FEEDBACK_URL = base + '&entry.1=Q1&entry.2=Q2';
+  check('a link missing questions isn’t used either', /isn’t set up/.test(await open()));
+  delete process.env.SEMESTERSYNC_FEEDBACK_URL;
+  await A.js(`document.querySelector('dialog.feedback').close(); 1`);
+}
+
 app.on('browser-window-created', (_e, win) => {
   if (win.__seen) return; win.__seen = true;
   if (BrowserWindow.getAllWindows().length !== 1) return; // only the app's own first window drives the run
@@ -872,6 +936,7 @@ app.on('browser-window-created', (_e, win) => {
     try {
       await A.until(`!!document.querySelector('#coursebar [data-view]')`); await sleep(1500);
       await phaseLocal(A);
+      await phaseFeedback(A);
       await phaseSync(A);
     } catch (e) { check('test run finished without crashing', false, String(e && e.stack || e)); }
     const errs = A.errors.filter(e => !/Failed to load resource|fonts\.g/.test(e));

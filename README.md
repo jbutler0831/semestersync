@@ -124,6 +124,28 @@ To run the server locally, see [`backend/README.md`](backend/README.md).
 
 This copy is the only thing still using Supabase. It stays until people have had time to update (see `docs/stage5-release-plan.md`); then `src/legacy.js` and the Supabase project go.
 
+## Feedback
+
+**Help → Send Feedback…** (also linked from Settings) asks six optional questions and sends the answers to a Google Form you own. Only the typed answers are sent: nothing from courses, grades, the account or the computer. If sending fails, the answers stay in the form, and **Copy answers** lets people send them another way. Until a form is set up, the dialog says feedback isn't set up yet and **Send** is off.
+
+**Set up the form (once, about 5 minutes):**
+
+1. Go to [forms.google.com](https://forms.google.com) and start a **Blank form**. Call it "SemesterSync feedback".
+2. Add six **Paragraph** questions, in this order, and leave **Required** off:
+   1. What college courses are you taking?
+   2. How do you currently track assignments?
+   3. What do you like most about SemesterSync?
+   4. What confused you or didn't work?
+   5. What would make you use SemesterSync every week?
+   6. Would you pay for additional features? Why or why not?
+3. In the form's **Settings → Responses**, turn off **Collect email addresses** and **Limit to 1 response**. Both make people sign in to Google, and the app can't do that.
+4. Open the form's **⋮** menu → **Get pre-filled link**. Type `Q1` in the first answer, `Q2` in the second, and so on to `Q6`. Click **Get link**, then **Copy link**.
+5. Put that link in `src/config.json` as `"feedbackForm"`, then build the installers. To try it without building, use `SEMESTERSYNC_FEEDBACK_URL="<the link>" npm start`.
+
+**Read the feedback** in the form's **Responses** tab. **Link to Sheets** puts every answer in a spreadsheet, and **⋮ → Get email notifications for new responses** emails you each time someone sends feedback.
+
+The link isn't a secret: it only lets people answer the form, as anyone with the form's link could. The app only sends to `docs.google.com` form addresses, and only uses the link if all six questions are in it.
+
 ## Build installers
 
 ```bash
@@ -154,7 +176,8 @@ After adding them, set the repository variable `REQUIRE_SIGNED` to `1` so a rele
 | `src/account.js` | Accounts and sync requests to SemesterSync's own API; keeps the session token |
 | `src/rooms.js` | Study rooms: one WebSocket per room to SemesterSync's own API |
 | `src/legacy.js` | The one-time copy of old Supabase accounts |
-| `src/config.json` | The SemesterSync server address (`apiUrl`), and the old Supabase project (only for copying old accounts) |
+| `src/feedback.js` | Help → Send Feedback: posts the answers to the Google Form in `config.json` |
+| `src/config.json` | The SemesterSync server address (`apiUrl`), the feedback form link (`feedbackForm`), and the old Supabase project (only for copying old accounts) |
 | `backend/` | The account server (FastAPI + PostgreSQL); see `backend/README.md` |
 | `supabase/schema.sql` | The old account database (only for the old accounts still being copied) |
 | `src/preload.js` | The only bridge between the page and the main process (context isolation on, no Node in the page) |

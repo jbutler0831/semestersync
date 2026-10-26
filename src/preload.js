@@ -68,6 +68,10 @@ contextBridge.exposeInMainWorld('desktop', {
       return () => ipcRenderer.removeListener('room:' + name, h);
     },
   },
+  feedback: {
+    status: () => ipcRenderer.invoke('feedback:status'),
+    send: answers => ipcRenderer.invoke('feedback:send', { answers }),
+  },
   files: { save: (name, text, open) => ipcRenderer.invoke('file:save', { name, text, open }) },
   backup: {
     auto: text => ipcRenderer.invoke('backup:auto', text),

@@ -31,6 +31,7 @@
         <label class="switch"><input type="checkbox" id="trayToggle" aria-label="Keep running when the window is closed"><span></span></label>
       </div>
       <p class="hint">Reminders, the morning summary and quiet hours are on the <button type="button" class="linkish" id="remindLink">Today</button> tab.</p>
+      <p class="hint">Ideas, or something not working? <button type="button" class="linkish" id="feedbackLink">Send feedback</button>.</p>
       <section class="field">
         <label for="quickKeyIn">Quick Add shortcut</label>
         <div class="row" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
@@ -115,6 +116,54 @@
   $('quickKeyDefault').onclick = () => { quickKey = settings.quickDefault; paintQuickKey(); };
   $('quickKeyOff').onclick = () => { quickKey = ''; paintQuickKey(); };
   $('remindLink').onclick = () => { dlg.close(); const b = document.querySelector('.nav [data-tab="today"]'); if (b) b.click(); const p = $('remindPanel'); if (p) p.scrollIntoView({ block: 'start' }); };
+
+  /* ---------- Send feedback (Help menu and Settings) ---------- */
+  const FEEDBACK_QS = [
+    'What college courses are you taking?',
+    'How do you currently track assignments?',
+    'What do you like most about SemesterSync?',
+    'What confused you or didn’t work?',
+    'What would make you use SemesterSync every week?',
+    'Would you pay for additional features? Why or why not?',
+  ];
+  const fdlg = document.createElement('dialog');
+  fdlg.className = 'settings feedback';
+  document.body.appendChild(fdlg);
+  const fbAnswers = () => FEEDBACK_QS.map((_, i) => ($('fbQ' + i) ? $('fbQ' + i).value.trim() : ''));
+  const fbText = () => FEEDBACK_QS.map((q, i) => `${q}\n${fbAnswers()[i] || '(skipped)'}`).join('\n\n');
+  function renderFeedback(configured) {
+    fdlg.innerHTML = `<form id="fbForm"><h2>Send feedback</h2>
+      <p class="hint">Every question is optional, so answer as many as you like. Only your answers are sent: nothing from your courses, grades or account. Please don’t include passwords or private details.</p>
+      ${FEEDBACK_QS.map((q, i) => `<section class="field"><label for="fbQ${i}">${q}</label><textarea id="fbQ${i}" class="inline-in" rows="2" maxlength="2000"></textarea></section>`).join('')}
+      <p class="msg" id="fbMsg" role="status" ${configured ? 'hidden' : ''}>${configured ? '' : 'Sending feedback isn’t set up in this version yet. You can still copy your answers.'}</p>
+      <div class="actions"><button type="button" class="btn ghost" id="fbCopy">Copy answers</button><span style="flex:1"></span>
+        <button type="button" class="btn" id="fbCancel">Cancel</button><button type="submit" class="btn primary" id="fbSend"${configured ? '' : ' disabled'}>Send</button></div></form>`;
+    if (!configured) $('fbMsg').className = 'msg bad';
+    $('fbCancel').onclick = () => fdlg.close();
+    $('fbCopy').onclick = () => { try { navigator.clipboard.writeText(fbText()).then(() => toast('Answers copied'), () => toast('Couldn’t copy. Select the text and copy it instead.')); } catch { toast('Couldn’t copy. Select the text and copy it instead.'); } };
+    $('fbForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const msg = (text, bad) => { const m = $('fbMsg'); m.textContent = text; m.className = 'msg' + (bad ? ' bad' : ''); m.hidden = false; };
+      if (!fbAnswers().some(Boolean)) { msg('Answer at least one question, or press Cancel.', true); $('fbQ0').focus(); return; }
+      const btn = $('fbSend'); btn.disabled = true; btn.textContent = 'Sending…';
+      const r = await d.feedback.send(fbAnswers()).catch(() => ({ ok: false, message: 'Couldn’t send your feedback. Try again.' }));
+      btn.disabled = false; btn.textContent = 'Send';
+      // On any problem the answers stay in the form, so nothing typed is lost.
+      if (!r.ok) { msg(r.message + (r.code === 'offline' || r.code === 'refused' ? ' Your answers are still here.' : ''), true); return; }
+      fdlg.innerHTML = `<form method="dialog"><h2>Thank you!</h2><p class="hint" id="fbDone">Your feedback was sent. It really helps make SemesterSync better.</p>
+        <div class="actions"><span style="flex:1"></span><button class="btn primary" value="close">Close</button></div></form>`;
+      toast('Feedback sent. Thank you!');
+    });
+  }
+  async function openFeedback() {
+    if (dlg.open) dlg.close();
+    if (fdlg.open) return;
+    const s = await d.feedback.status().catch(() => ({ configured: false }));
+    renderFeedback(s.configured);
+    fdlg.showModal();
+    $('fbQ0').focus();
+  }
+  $('feedbackLink').onclick = openFeedback;
 
   /* ---------- Claude availability hint ---------- */
   d.claude.available().then(ok => {
@@ -363,6 +412,7 @@
   /* ---------- Menu shortcuts ---------- */
   d.onMenu('account', () => openAccount());
   d.onMenu('settings', openSettings);
+  d.onMenu('feedback', openFeedback);
   d.onMenu('new-course', () => { const b = $('addCourse'); if (b) b.click(); else toast('You can track up to 8 courses'); });
   d.onMenu('open-file', () => $('fileInput').click());
   d.onMenu('export-ics', () => { const b = $('syncBtn'); if (b.disabled) toast('Nothing to export. Turn on calendar sync for some deliverables first.'); else b.click(); });
