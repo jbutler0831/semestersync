@@ -31,17 +31,30 @@ contextBridge.exposeInMainWorld('desktop', {
   account: {
     status: () => ipcRenderer.invoke('account:status'),
     signUp: (email, password) => ipcRenderer.invoke('account:sign-up', { email, password }),
+    verify: (email, code) => ipcRenderer.invoke('account:verify', { email, code }),
+    resend: email => ipcRenderer.invoke('account:resend', { email }),
     signIn: (email, password) => ipcRenderer.invoke('account:sign-in', { email, password }),
     signOut: () => ipcRenderer.invoke('account:sign-out'),
-    google: () => ipcRenderer.invoke('account:google'),
-    cancelGoogle: () => ipcRenderer.send('account:google-cancel'),
     requestReset: email => ipcRenderer.invoke('account:reset-request', { email }),
     completeReset: (email, code, password) => ipcRenderer.invoke('account:reset-complete', { email, code, password }),
+    changePassword: (current, next) => ipcRenderer.invoke('account:change-password', { current, next }),
+    sessions: () => ipcRenderer.invoke('account:sessions'),
+    revokeSession: id => ipcRenderer.invoke('account:revoke-session', { id }),
+    revokeOthers: () => ipcRenderer.invoke('account:revoke-others'),
+    deleteAccount: password => ipcRenderer.invoke('account:delete', { password }),
   },
-  cloud: {
-    list: () => ipcRenderer.invoke('cloud:list'),
-    set: (id, body) => ipcRenderer.invoke('cloud:set', { id, body }),
-    remove: id => ipcRenderer.invoke('cloud:delete', { id }),
+  // A one-time copy of an old (Supabase) account's courses to this computer.
+  legacy: {
+    status: () => ipcRenderer.invoke('legacy:status'),
+    export: () => ipcRenderer.invoke('legacy:export'),
+    forget: () => ipcRenderer.invoke('legacy:forget'),
+  },
+  // Cloud sync with the account server (versioned documents; see renderer/cloudsync.js).
+  sync: {
+    changes: since => ipcRenderer.invoke('sync:changes', { since }),
+    push: (changes, epoch) => ipcRenderer.invoke('sync:push', { changes, epoch }),
+    usage: () => ipcRenderer.invoke('sync:usage'),
+    clear: password => ipcRenderer.invoke('sync:clear', { password }),
   },
   rooms: {
     join: code => ipcRenderer.invoke('room:join', { code }),
@@ -55,9 +68,15 @@ contextBridge.exposeInMainWorld('desktop', {
       return () => ipcRenderer.removeListener('room:' + name, h);
     },
   },
+  feedback: {
+    status: () => ipcRenderer.invoke('feedback:status'),
+    send: answers => ipcRenderer.invoke('feedback:send', { answers }),
+  },
   files: { save: (name, text, open) => ipcRenderer.invoke('file:save', { name, text, open }) },
   backup: {
     auto: text => ipcRenderer.invoke('backup:auto', text),
+    write: (name, text) => ipcRenderer.invoke('backup:write', { name, text }),
+    clear: () => ipcRenderer.invoke('backup:clear'),
     list: () => ipcRenderer.invoke('backup:list'),
     read: name => ipcRenderer.invoke('backup:read', name),
     openFolder: () => ipcRenderer.invoke('backup:open-folder'),

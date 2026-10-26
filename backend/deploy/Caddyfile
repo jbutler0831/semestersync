@@ -1,0 +1,18 @@
+# HTTPS for the API, with a certificate from Let's Encrypt (renewed automatically).
+# Caddy writes no access logs unless asked, and replaces any X-Forwarded-For the client sent with the real address.
+{$API_DOMAIN} {
+	@push path /v1/sync/push
+	request_body @push {
+		max_size 4MB
+	}
+	@small not path /v1/sync/push
+	request_body @small {
+		max_size 16KB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	# WebSockets (study rooms) pass through too.
+	reverse_proxy api:8000
+}

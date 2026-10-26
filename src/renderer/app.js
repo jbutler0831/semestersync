@@ -1010,6 +1010,96 @@ const HERE = window.desktop ? 'on this computer' : 'in this browser';
 const store = { mode: 'none', col: null, base: new Map(), timer: null, status: 'sample', busy: false, uid: null, who: '', signedOut: false, lastOk: null, fails: 0, retryAt: 0, dirtySince: 0, loaded: false, problem: '' };
 const STORE_KEY = 'ssync-courses-v1';
 const CACHE_KEY = 'ssync-account-cache-v1';
+// Local-first (desktop): this computer always keeps a complete copy, signed in or not, and nothing goes to
+// an account until the person agrees. The format marker records that local storage is complete; the first
+// time it's missing, everything already saved is backed up to a file before anything is written.
+const LOCAL_FIRST = !!window.desktop;
+const FORMAT_KEY = 'ssync-format', LOCAL_FORMAT = 2, OWNER_KEY = 'ssync-local-owner';
+const consentKey = uid => 'ssync-sync-consent-' + uid;
+function lsGet(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); return true; } catch (_) { return false; } }
+// Sync is on for this account if the person agreed, or if this computer was already syncing it before
+// consent existed (an account cache for that user means it was).
+function syncConsent(uid) {
+  if (!LOCAL_FIRST) return true;
+  if (lsGet(consentKey(uid)) === '1') return true;
+  try { const c = JSON.parse(lsGet(CACHE_KEY) || 'null'); if (c && c.uid === uid) { lsSet(consentKey(uid), '1'); return true; } } catch (_) {}
+  return false;
+}
+async function backupBeforeUpgrade() {
+  if (!LOCAL_FIRST || lsGet(FORMAT_KEY)) return;
+  const raw = { courses: lsGet(STORE_KEY), extras: lsGet(EXTRAS_KEY), accountCache: lsGet(CACHE_KEY) };
+  if (raw.courses || raw.extras || raw.accountCache) {
+    // The exact saved text, untouched, so it can be restored whatever happens next.
+    const r = await window.desktop.backup.write('before-local-first', JSON.stringify({ app: 'SemesterSync', kind: 'raw-before-upgrade', at: new Date().toISOString(), raw })).catch(() => ({ ok: false }));
+    if (!r || !r.ok) return; // no marker: try again next start, and don't write over anything until it works
+  }
+  lsSet(FORMAT_KEY, String(LOCAL_FORMAT));
+}
+// Accounts moved off Supabase. Someone signed in to an old account gets its courses copied to this computer
+// once: fetched from the old account (a raw copy goes to a backup file first), merged with this computer's
+// own copy, and the old sign-in is removed. Offline with nothing cached, it waits for the next start.
+const MIGRATED_KEY = 'ssync-migrated-supabase';
+async function migrateOldAccount() {
+  const d = window.desktop;
+  if (!LOCAL_FIRST || !d.legacy || lsGet(MIGRATED_KEY)) return;
+  let cache = null; try { cache = JSON.parse(lsGet(CACHE_KEY) || 'null'); } catch (_) {}
+  if (!cache || !Array.isArray(cache.docs)) cache = null;
+  const st = await d.legacy.status().catch(() => ({ session: false }));
+  if (!st.session && !cache) { lsSet(MIGRATED_KEY, '1'); return; }
+  let remote = null;
+  if (st.session) {
+    const r = await d.legacy.export().catch(() => null);
+    if (r && r.ok) remote = r.docs.filter(x => x && typeof x.id === 'string' && x.body && typeof x.body.json === 'string').map(x => [x.id, x.body.json]);
+    else if (!cache && !(r && r.code === 'signed_out')) return;
+  }
+  if (remote && remote.length) {
+    const w = await d.backup.write('old-account-copy', JSON.stringify({ app: 'SemesterSync', kind: 'raw-before-upgrade', at: new Date().toISOString(), raw: { accountCache: JSON.stringify({ docs: remote }) } })).catch(() => null);
+    if (!w || !w.ok) return; // can't keep a safe copy yet: leave everything as it is and try next start
+  }
+  // This computer's last copy of the account (with edits not yet uploaded) wins; the old account fills in the rest.
+  const docs = new Map(cache ? cache.docs : []);
+  const base = new Map(cache && Array.isArray(cache.base) ? cache.base : []);
+  const others = [];
+  for (const [id, json] of remote || []) {
+    if (id === 'meta') continue;
+    const b = base.get(id), seen = b === undefined ? undefined : (typeof b === 'string' ? b : b.l);
+    if (!docs.has(id)) { if (b === undefined) docs.set(id, json); } // in base but gone here: it was deleted on this computer
+    else if (docs.get(id) !== json) { if (seen !== undefined && docs.get(id) === seen) docs.set(id, json); else others.push([id, json]); }
+  }
+  docs.delete('meta');
+  if (docs.size) {
+    const here = readLocal();
+    const mine = (here.courses || []).filter(c => !c.sample && !docs.has('course-' + c.id));
+    if ((here.courses || []).some(c => !c.sample)) snapshot('Before your old account’s courses were copied to this computer', { app: 'SemesterSync', format: 1, exported: new Date().toISOString(), courses: here.courses.map(c => JSON.parse(serialize(c))) });
+    const courseJson = [...docs].filter(([id]) => id.startsWith('course-')).map(([, j]) => j).concat(mine.map(serialize));
+    const ex = [...docs].filter(([id]) => !id.startsWith('course-'));
+    lsSet(STORE_KEY, JSON.stringify(courseJson));
+    if (ex.length) lsSet(EXTRAS_KEY, JSON.stringify(ex));
+    for (const [id, json] of others) if (id.startsWith('course-')) { try { snapshot('Other copy of ' + (JSON.parse(json).code || 'a course') + ' from your old account', { app: 'SemesterSync', format: 1, courses: [JSON.parse(json)] }); } catch (_) {} }
+  }
+  try { for (const k of Object.keys(localStorage)) if (k.startsWith('ssync-sync-consent-')) localStorage.removeItem(k); localStorage.removeItem(CACHE_KEY); } catch (_) {}
+  lsSet(OWNER_KEY, 'local');
+  lsSet(MIGRATED_KEY, '1');
+  await d.legacy.forget().catch(() => {});
+  store.migrated = { email: st.email || '', courses: [...docs.keys()].filter(k => k.startsWith('course-') && k !== 'course-inbox').length };
+}
+// Before an account's data replaces what's on this computer, keep a copy of what was here.
+// Also when this computer has no sync record for the account (first sync here, or signed out and back in):
+// whatever was edited here in the meantime is kept as a safety copy until real merging arrives.
+function guardOwner(uid) {
+  if (!LOCAL_FIRST) return;
+  const owner = lsGet(OWNER_KEY) || 'local';
+  let cached = false; try { const c = JSON.parse(lsGet(CACHE_KEY) || 'null'); cached = !!(c && c.uid === uid); } catch (_) {}
+  if (owner === uid && cached) return;
+  const r = readLocal();
+  if ((r.courses || []).some(c => !c.sample)) {
+    const data = { app: 'SemesterSync', format: 1, exported: new Date().toISOString(), courses: r.courses.map(c => JSON.parse(serialize(c))), extras: (() => { const e = r.extras.find(x => x[0] === 'extras'); try { return e ? JSON.parse(e[1]) : null; } catch (_) { return null; } })(), decks: r.extras.filter(x => String(x[0]).startsWith('deck-')).map(x => { try { return JSON.parse(x[1]); } catch (_) { return null; } }).filter(Boolean) };
+    snapshot('Before an account’s courses replaced this computer’s', data);
+    window.desktop.backup.write('before-account-switch', JSON.stringify(data)).catch(() => {});
+  }
+  lsSet(OWNER_KEY, uid);
+}
 const serialize = c => JSON.stringify({ id: c.id, code: c.code, title: c.title, text: c.text, categories: c.categories, items: c.items, color: c.color, parser: c.parser, order: c.order, credits: c.credits, target: c.target, override: c.override, sample: c.sample || undefined, source: c.source, review: c.review, meets: c.meets, finalId: c.finalId, catAvg: c.catAvg, calc: c.calc, inbox: c.inbox || undefined, drafts: c.inbox ? c.drafts : undefined });
 function localDocs() {
   const m = new Map();
@@ -1025,15 +1115,17 @@ function paintSaveStatus() {
   const el = $('saveStatus'); if (!el) return;
   const when = store.lastOk ? ` · ${clockTime(store.lastOk)}` : '';
   const secs = Math.max(0, Math.ceil((store.retryAt - Date.now()) / 1000));
-  const copy = {
-    sample: ['', store.mode === 'db' ? `Sample courses · your changes save to ${acctName()}` : store.mode === 'local' ? `Sample courses · your changes save ${HERE}${store.signedOut && !window.desktop ? '. Sign in to Claude to keep them on every device' : ''}` : 'Sample courses'],
+  let copy = {
+    sample: ['', store.syncOff ? `Sample courses · saved ${HERE} · cloud sync off` : store.mode === 'db' ? `Sample courses · your changes save to ${acctName()}` : store.mode === 'local' ? `Sample courses · your changes save ${HERE}${store.signedOut && !window.desktop ? '. Sign in to Claude to keep them on every device' : ''}` : 'Sample courses'],
     saving: ['busy', 'Saving…'],
-    saved: ['ok', store.mode === 'db' ? `Synced to ${acctName()}${when}` : `Saved ${HERE}${when}`],
+    saved: ['ok', store.mode === 'db' ? `Synced to ${acctName()}${when}` : store.syncOff ? `Saved ${HERE}${when} · cloud sync off` : `Saved ${HERE}${when}`],
     retry: ['warn', `Offline · saved ${HERE}, syncing again ${secs ? `in ${secs} s` : 'now'}`],
     conflict: ['warn', `Synced · kept the newer copy of a change from another device`],
     error: ['err', 'Couldn\'t save. Open Your data and export a backup so nothing is lost.'],
     none: ['', 'Changes last until you reload'],
   }[store.status] || ['', ''];
+  const cloud = window.CloudSync && window.CloudSync.label(store.status); // desktop cloud sync, when it's on
+  if (cloud) copy = cloud;
   el.className = 'save-status ' + copy[0]; el.textContent = copy[1];
   if (dataDlg && dataDlg.open) paintDataStatus();
 }
@@ -1132,6 +1224,7 @@ async function syncNow(quiet) {
     }
     store.dirtySince = 0;
     writeCache(localDocs());
+    if (LOCAL_FIRST) saveLocal();
     if (plan.lost.length && !quiet) toast('Edited on two devices: kept the newer copy. The other is in Your data → Safety copies.');
     return plan;
   })();
@@ -1146,7 +1239,7 @@ async function flushSave() {
       const plan = await syncNow();
       store.status = plan.lost.length ? 'conflict' : 'saved';
       store.fails = 0;
-    } else if (store.mode === 'local') { saveLocal(); store.status = 'saved'; }
+    } else if (store.mode === 'local') { saveLocal(); store.status = 'saved'; if (window.CloudSync) window.CloudSync.changed(); }
     if (store.mode !== 'none') { store.lastOk = Date.now(); autoBackup(); }
   } catch (e) {
     const denied = e && /not_granted|not_permitted|forbidden|permission/i.test(String(e.code || ''));
@@ -1156,6 +1249,7 @@ async function flushSave() {
       try { saveLocal(); store.status = 'saved'; store.lastOk = Date.now(); } catch (_) { store.status = 'error'; }
     } else if (store.mode === 'db') {
       writeCache(localDocs());
+      if (LOCAL_FIRST) { try { saveLocal(); } catch (_) {} } // offline: this computer still has every change
       const wait = RETRY_S[Math.min(store.fails, RETRY_S.length - 1)];
       store.fails++; store.status = 'retry'; store.retryAt = Date.now() + wait * 1000;
       clearTimeout(store.timer); store.timer = setTimeout(flushSave, wait * 1000);
@@ -1181,7 +1275,7 @@ addEventListener('online', () => { if (store.status === 'retry') { clearTimeout(
 // Closing the window or reloading inside the save delay must not lose the last edit.
 addEventListener('pagehide', () => {
   if (!store.loaded || store.status !== 'saving' && store.status !== 'retry') return;
-  try { if (store.mode === 'local') saveLocal(); else if (store.mode === 'db') writeCache(localDocs()); } catch (_) {}
+  try { if (store.mode === 'local' || LOCAL_FIRST) saveLocal(); if (store.mode === 'db') writeCache(localDocs()); } catch (_) {}
 });
 function retryNow() { clearTimeout(store.timer); store.status = 'saving'; paintSaveStatus(); flushSave(); }
 
@@ -1292,6 +1386,8 @@ function docsToState(docs) {
 async function initStore() {
   const api = window.claude && window.claude.use ? window.claude : null;
   let loaded = null, loadedExtras = [];
+  await backupBeforeUpgrade();
+  await migrateOldAccount().catch(() => {});
   if (api) {
     try {
       const [db, user] = await Promise.all([api.use('db'), api.use('user')]);
@@ -1299,7 +1395,10 @@ async function initStore() {
       store.signedOut = !id;
       // View-only visitors can't write even their own private folder; they save on this device instead.
       const canWrite = user && user.can ? await user.can('data.write') : null;
-      if (db && id && canWrite !== false) {
+      // Signed in but sync not agreed to: work from this computer's copy, and say so.
+      if (db && id && canWrite !== false && !syncConsent(id)) { store.syncOff = true; store.uid = id; }
+      else if (db && id && canWrite !== false) {
+        guardOwner(id);
         store.mode = 'db'; store.uid = id;
         store.col = db.collection('data/users/' + id);
         if (!window.desktop) { try { const me = await user.me(); store.who = (me && me.name) || ''; } catch (_) { store.who = ''; } }
@@ -1348,11 +1447,15 @@ async function initStore() {
   store.loaded = true;
   if (edited) markDirty();
   else if (!loaded && store.status !== 'retry') store.status = store.mode === 'none' ? 'none' : 'sample';
+  // Copy what came from the account to this computer straight away, so it's here even if the app closes now.
+  if (LOCAL_FIRST && store.mode === 'db' && loaded && !edited) { try { saveLocal(); } catch (_) {} }
   renderFeatures();
   if (store.pendingMerge) { store.pendingMerge = false; clearTimeout(store.timer); store.timer = setTimeout(flushSave, 300); }
   if (store.status === 'retry') { clearTimeout(store.timer); store.timer = setTimeout(store.unloaded ? retryLoad : flushSave, 5000); }
   paintSaveStatus();
   if (store.problem) showProblem(store.problem);
+  if (store.migrated) showMigrated(store.migrated);
+  if (window.CloudSync) window.CloudSync.start();
   if (fresh && store.status !== 'retry') maybeOnboard();
   setTimeout(() => { checkReminders(); pushTray(); }, 5000);
   pushQuickContext(); drainQuick();
@@ -1406,6 +1509,7 @@ function renderAll() {
   renderCourseBar(); renderSyllabusReview(); renderSourceMeta(); renderFilters(); renderTable(); renderGrading();
   const weeks = renderHeat(); renderSummary(weeks); renderSync();
   renderFeatures();
+  if (window.CloudSync) window.CloudSync.paintCourse();
 }
 function renderDerived() {
   renderCourseBar(); renderSyllabusReview();
@@ -2626,7 +2730,7 @@ function roomPrefs() { try { return JSON.parse(localStorage.getItem(ROOM_PREF)) 
 function saveRoomPrefs(p) { try { localStorage.setItem(ROOM_PREF, JSON.stringify(p)); } catch (_) {} }
 const cleanName = s => String(s || '').replace(/[\u0000-\u001f]/g, '').trim().slice(0, 32);
 const newCode = () => Array.from({ length: 6 }, () => 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 31)]).join('');
-// Same calls on the web (Claude's room capability) and in the desktop app (Supabase Realtime).
+// Same calls on the web (Claude's room capability) and in the desktop app (SemesterSync's own server).
 async function openRoom(code) {
   if (window.desktop && window.desktop.rooms) {
     const r = window.desktop.rooms;
@@ -2952,6 +3056,21 @@ function cleanDeck(d) {
 }
 function cleanBackup(obj) {
   if (!obj || typeof obj !== 'object') return null;
+  // The untouched copy saved before the local-first upgrade: the account's copy if there was one, else this computer's.
+  if (obj.kind === 'raw-before-upgrade' && obj.raw) {
+    let docs = null;
+    try { const c = JSON.parse(obj.raw.accountCache || 'null'); if (c && Array.isArray(c.docs) && c.docs.length) docs = c.docs; } catch (_) {}
+    if (docs) {
+      const ex = docs.filter(([id]) => !String(id).startsWith('course-'));
+      const extrasDoc = ex.find(([id]) => id === 'extras');
+      obj = { courses: docs.filter(([id]) => String(id).startsWith('course-')).map(([, j]) => j), extras: extrasDoc ? JSON.parse(extrasDoc[1]) : null, decks: ex.filter(([id]) => String(id).startsWith('deck-')).map(([, j]) => { try { return JSON.parse(j); } catch (_) { return null; } }).filter(Boolean), exported: obj.at };
+    } else {
+      let list = []; try { list = JSON.parse(obj.raw.courses || '[]'); } catch (_) {}
+      let ex = []; try { ex = JSON.parse(obj.raw.extras || '[]'); } catch (_) {}
+      const extrasDoc = ex.find(x => x[0] === 'extras');
+      obj = { courses: list, extras: extrasDoc ? JSON.parse(extrasDoc[1]) : null, decks: ex.filter(x => String(x[0]).startsWith('deck-')).map(x => { try { return JSON.parse(x[1]); } catch (_) { return null; } }).filter(Boolean), exported: obj.at };
+    }
+  }
   const list = Array.isArray(obj) ? obj : obj.courses;
   if (!Array.isArray(list)) return null;
   const courses = [];
@@ -3047,7 +3166,7 @@ function openImport(b) {
 const dataDlg = makeDialog('wide data-dlg');
 function paintDataStatus() {
   const el = dataDlg.querySelector('#dataStatus'); if (!el) return;
-  const where = store.mode === 'db' ? `Synced to ${esc(acctName())}, with a copy ${HERE} for working offline.` : store.mode === 'local' ? `Saved ${HERE} only.${window.desktop ? ' Sign in to keep it on every computer you use.' : ''}` : 'Not being saved: this view has no storage.';
+  const where = (window.CloudSync && window.CloudSync.where()) || (store.mode === 'db' ? `Synced to ${esc(acctName())}, with a complete copy ${HERE}.` : store.syncOff ? `Saved ${HERE}. You’re signed in, but cloud sync is off, so nothing is uploaded.` : store.mode === 'local' ? `Saved ${HERE} only.` : 'Not being saved: this view has no storage.');
   const last = store.lastOk ? `Last saved ${fmtDay(new Date(store.lastOk))}, ${clockTime(store.lastOk)}.` : '';
   const exp = extras.lastExport ? `Last backup file ${fmtDay(new Date(extras.lastExport))}.` : 'You haven’t exported a backup file yet.';
   el.innerHTML = `<div class="ds ${$('saveStatus') ? $('saveStatus').className.replace('save-status', '') : ''}"><b>${esc($('saveStatus') ? $('saveStatus').textContent : '')}</b><span>${where} ${last}</span><span>${exp}</span></div>`;
@@ -3076,6 +3195,7 @@ function openData() {
   dataDlg.innerHTML = `<form method="dialog"><h2>Your data</h2>
     <section class="data-sec" id="dataStatus"></section>
     <div class="row"><button type="button" class="btn sm" id="dataSync">Sync now</button>${store.status === 'retry' ? '<button type="button" class="btn sm" id="dataRetry">Retry now</button>' : ''}</div>
+    <section class="data-sec" id="cloudSec" hidden></section>
     <section class="data-sec"><h3>Backup file</h3>
       <p class="hint">Everything in one file: courses, scores, study sets and settings. Keep a copy somewhere safe, like a cloud drive, and a new computer or a reinstall never costs you a semester.</p>
       <div class="row"><button type="button" class="btn primary" id="dataExport">Export backup</button><button type="button" class="btn" id="dataImport">Restore from a file…</button><button type="button" class="btn ghost" id="dataCsv">Deliverables as a spreadsheet (.csv)</button></div>
@@ -3096,6 +3216,7 @@ function openData() {
     </section>
     <div class="actions"><button type="button" class="btn ghost" id="dataTour">Show the welcome guide</button><button type="button" class="btn ghost" id="dataKeys">Keyboard shortcuts</button><span style="flex:1"></span><button class="btn primary" value="close">Done</button></div></form>`;
   paintDataStatus(); renderSnapList(); renderDiskBackups();
+  if (window.CloudSync) window.CloudSync.renderData();
   const q = s => dataDlg.querySelector(s);
   q('#dataSync').onclick = async () => { q('#dataSync').disabled = true; await flushSave(); q('#dataSync').disabled = false; paintDataStatus(); };
   if (q('#dataRetry')) q('#dataRetry').onclick = () => { retryNow(); q('#dataRetry').remove(); };
@@ -3134,6 +3255,13 @@ function openData() {
     if (k) window.desktop.backup.read(k.dataset.disk).then(res => { if (res.ok) { dataDlg.close(); importBackup(res.text); } else toast('Couldn’t read that backup.'); });
   });
   dataDlg.showModal();
+}
+function showMigrated(m) {
+  const el = document.createElement('div');
+  el.className = 'banner ok'; el.setAttribute('role', 'status'); el.id = 'migratedBanner';
+  el.innerHTML = `<div style="flex:1"><b>Your courses are now saved on this computer</b>SemesterSync accounts changed, so ${m.courses ? `the ${m.courses} course${m.courses === 1 ? '' : 's'} from` : 'everything in'} your old account${m.email ? ' (' + esc(m.email) + ')' : ''} ${m.courses === 1 ? 'was' : 'were'} copied here and you were signed out of it. Nothing was lost; a copy is also in Your data → Backups. You can create a new account any time, but you don’t need one.</div><button type="button" class="icon-btn" aria-label="Dismiss"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>`;
+  el.querySelector('.icon-btn').onclick = () => el.remove();
+  document.querySelector('main').prepend(el);
 }
 function showProblem(msg) {
   const el = document.createElement('div');
@@ -3312,7 +3440,7 @@ function paintOnboard() {
       ${desk && !ai ? '<div class="row"><button type="button" class="btn" data-ob="key">Add a Claude API key</button></div>' : ''}
       ${nav('next', 'Continue')}`,
     () => `<h2>Where your semester is saved</h2>
-      ${desk ? `<p class="hint" style="font-size:14px">Everything saves on this computer as you go, with a daily backup. Sign in to keep it on every computer you use, too. Accounts are optional and free.</p>
+      ${desk ? `<p class="hint" style="font-size:14px">Everything saves on this computer as you go, with a daily backup. You don’t need an account.</p>
         <div class="row"><button type="button" class="btn" data-ob="account">Sign in or create an account</button></div>
         <p class="hint">Already have courses in an account? Signing in asks what to do with the ones on this computer, so nothing is overwritten.</p>`
         : `<p class="hint" style="font-size:14px">${store.mode === 'db' ? 'Your semester saves to your Claude account as you go, so it’s there wherever you open SemesterSync.' : 'Your semester saves in this browser as you go. Export a backup file from <b>Your data</b> to move it or keep it safe.'}</p>`}
@@ -4497,4 +4625,10 @@ let startTab = 'today';
 try { startTab = localStorage.getItem('ssync-tab') || 'today'; } catch (_) {}
 setTab(startTab);
 paintFocus();
+// What cloudsync.js (desktop) needs from the page. Getters, because some of these are replaced, not changed.
+if (window.desktop) window.SSyncPage = {
+  get state() { return state; }, get store() { return store; }, get decks() { return decks; }, get dataDlg() { return dataDlg; },
+  localDocs, applyDocs, saveLocal, snapshot, courseById, editCourse, paintSaveStatus, clockTime, toast, openData, makeDialog, backupData, uid, esc,
+  HERE, INBOX_ID, MAX_COURSES,
+};
 })();

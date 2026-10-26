@@ -53,31 +53,11 @@
     return sample;
   }
 
-  // When someone is signed in, the page's saving goes to their account (cloud.js);
-  // signed out, `db` is null and the page keeps courses on this computer.
-  const account = d.account.status().catch(() => ({ configured: false, user: null }));
-  const fail = res => { throw { code: 'unavailable', message: res.message }; };
-  const db = {
-    collection: () => ({
-      async get() {
-        const res = await d.cloud.list();
-        if (!res.ok) fail(res);
-        return { docs: res.docs.map(x => ({ id: x.id, exists: true, data: () => x.body })) };
-      },
-      doc: id => ({
-        async set(body) { const res = await d.cloud.set(id, body); if (!res.ok) fail(res); },
-        async delete() { const res = await d.cloud.remove(id); if (!res.ok) fail(res); },
-      }),
-    }),
-  };
-
+  // The desktop page keeps courses on this computer and never uses the web version's account storage;
+  // cloud sync with SemesterSync accounts is cloudsync.js.
   window.claude = {
     async use(name) {
       if (name === 'sample') return (await d.claude.available()) ? makeSample() : null;
-      const { user } = await account;
-      if (!user) return null;
-      if (name === 'db') return db;
-      if (name === 'user') return { id: async () => user.id, can: async () => true, me: async () => ({ id: user.id, name: user.email }) };
       return null;
     },
   };

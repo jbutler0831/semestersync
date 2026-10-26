@@ -1,4 +1,6 @@
 {
+  "apiUrl": "",
+  "feedbackForm": "",
   "supabaseUrl": "https://vaveabkrlenvsedzakjj.supabase.co",
   "supabaseAnonKey": "sb_publishable_XS1vcrN_d55wWzmQ_Uat8g_DimRTrr1"
 }

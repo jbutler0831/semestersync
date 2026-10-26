@@ -31,6 +31,7 @@
         <label class="switch"><input type="checkbox" id="trayToggle" aria-label="Keep running when the window is closed"><span></span></label>
       </div>
       <p class="hint">Reminders, the morning summary and quiet hours are on the <button type="button" class="linkish" id="remindLink">Today</button> tab.</p>
+      <p class="hint">Ideas, or something not working? <button type="button" class="linkish" id="feedbackLink">Send feedback</button>.</p>
       <section class="field">
         <label for="quickKeyIn">Quick Add shortcut</label>
         <div class="row" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
@@ -116,6 +117,54 @@
   $('quickKeyOff').onclick = () => { quickKey = ''; paintQuickKey(); };
   $('remindLink').onclick = () => { dlg.close(); const b = document.querySelector('.nav [data-tab="today"]'); if (b) b.click(); const p = $('remindPanel'); if (p) p.scrollIntoView({ block: 'start' }); };
 
+  /* ---------- Send feedback (Help menu and Settings) ---------- */
+  const FEEDBACK_QS = [
+    'What college courses are you taking?',
+    'How do you currently track assignments?',
+    'What do you like most about SemesterSync?',
+    'What confused you or didn’t work?',
+    'What would make you use SemesterSync every week?',
+    'Would you pay for additional features? Why or why not?',
+  ];
+  const fdlg = document.createElement('dialog');
+  fdlg.className = 'settings feedback';
+  document.body.appendChild(fdlg);
+  const fbAnswers = () => FEEDBACK_QS.map((_, i) => ($('fbQ' + i) ? $('fbQ' + i).value.trim() : ''));
+  const fbText = () => FEEDBACK_QS.map((q, i) => `${q}\n${fbAnswers()[i] || '(skipped)'}`).join('\n\n');
+  function renderFeedback(configured) {
+    fdlg.innerHTML = `<form id="fbForm"><h2>Send feedback</h2>
+      <p class="hint">Every question is optional, so answer as many as you like. Only your answers are sent: nothing from your courses, grades or account. Please don’t include passwords or private details.</p>
+      ${FEEDBACK_QS.map((q, i) => `<section class="field"><label for="fbQ${i}">${q}</label><textarea id="fbQ${i}" class="inline-in" rows="2" maxlength="2000"></textarea></section>`).join('')}
+      <p class="msg" id="fbMsg" role="status" ${configured ? 'hidden' : ''}>${configured ? '' : 'Sending feedback isn’t set up in this version yet. You can still copy your answers.'}</p>
+      <div class="actions"><button type="button" class="btn ghost" id="fbCopy">Copy answers</button><span style="flex:1"></span>
+        <button type="button" class="btn" id="fbCancel">Cancel</button><button type="submit" class="btn primary" id="fbSend"${configured ? '' : ' disabled'}>Send</button></div></form>`;
+    if (!configured) $('fbMsg').className = 'msg bad';
+    $('fbCancel').onclick = () => fdlg.close();
+    $('fbCopy').onclick = () => { try { navigator.clipboard.writeText(fbText()).then(() => toast('Answers copied'), () => toast('Couldn’t copy. Select the text and copy it instead.')); } catch { toast('Couldn’t copy. Select the text and copy it instead.'); } };
+    $('fbForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const msg = (text, bad) => { const m = $('fbMsg'); m.textContent = text; m.className = 'msg' + (bad ? ' bad' : ''); m.hidden = false; };
+      if (!fbAnswers().some(Boolean)) { msg('Answer at least one question, or press Cancel.', true); $('fbQ0').focus(); return; }
+      const btn = $('fbSend'); btn.disabled = true; btn.textContent = 'Sending…';
+      const r = await d.feedback.send(fbAnswers()).catch(() => ({ ok: false, message: 'Couldn’t send your feedback. Try again.' }));
+      btn.disabled = false; btn.textContent = 'Send';
+      // On any problem the answers stay in the form, so nothing typed is lost.
+      if (!r.ok) { msg(r.message + (r.code === 'offline' || r.code === 'refused' ? ' Your answers are still here.' : ''), true); return; }
+      fdlg.innerHTML = `<form method="dialog"><h2>Thank you!</h2><p class="hint" id="fbDone">Your feedback was sent. It really helps make SemesterSync better.</p>
+        <div class="actions"><span style="flex:1"></span><button class="btn primary" value="close">Close</button></div></form>`;
+      toast('Feedback sent. Thank you!');
+    });
+  }
+  async function openFeedback() {
+    if (dlg.open) dlg.close();
+    if (fdlg.open) return;
+    const s = await d.feedback.status().catch(() => ({ configured: false }));
+    renderFeedback(s.configured);
+    fdlg.showModal();
+    $('fbQ0').focus();
+  }
+  $('feedbackLink').onclick = openFeedback;
+
   /* ---------- Claude availability hint ---------- */
   d.claude.available().then(ok => {
     if (ok) return;
@@ -129,7 +178,6 @@
 
   /* ---------- Account ---------- */
   const esc = v => String(v).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const GOOGLE_G = '<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>';
   const PERSON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="5.5" r="2.8"/><path d="M2.8 14c.6-2.7 2.7-4.2 5.2-4.2s4.6 1.5 5.2 4.2"/></svg>';
   const acctBtn = document.createElement('button');
   acctBtn.type = 'button'; acctBtn.className = 'acct-btn'; acctBtn.id = 'accountBtn';
@@ -138,8 +186,10 @@
   const adlg = document.createElement('dialog');
   adlg.className = 'settings account';
   document.body.appendChild(adlg);
-  let acct = { configured: false, user: null };
+  let acct = { configured: false, user: null, sync: false };
+  // Signed out: 'in', 'up', 'code' (confirm the email), 'reset1', 'reset2'. Signed in: 'me', 'password', 'devices', 'delete'.
   let mode = 'in';
+  let pendingEmail = '';
 
   function paintAcctBtn() {
     if (acct.user) {
@@ -147,162 +197,222 @@
       acctBtn.title = `Signed in as ${acct.user.email}`;
     } else {
       acctBtn.innerHTML = `${PERSON}<span class="who">Sign in</span>`;
-      acctBtn.title = 'Sign in or create an account';
+      acctBtn.title = 'Sign in or create an account (optional)';
     }
   }
+  const PASS_HINT = '<p class="hint">At least 8 characters. A short phrase is easy to remember and hard to guess.</p>';
+  const actions = (label, cancel = 'Cancel') => `<div class="actions"><span style="flex:1"></span><button type="button" class="btn" id="authCancel">${cancel}</button><button type="submit" class="btn primary" id="authSubmit">${label}</button></div>`;
+  const codeField = '<section class="field"><label for="authCode">6-digit code from the email</label><input type="text" id="authCode" class="code-in" inputmode="numeric" autocomplete="one-time-code" pattern="\\s*[0-9]{6}\\s*" maxlength="8" required></section>';
   function renderAccount(msg, bad) {
-    const note = msg ? `<p class="msg${bad ? ' bad' : ''}">${esc(msg)}</p>` : '';
+    const note = msg ? `<p class="msg${bad ? ' bad' : ''}" role="${bad ? 'alert' : 'status'}">${esc(msg)}</p>` : '';
     if (!acct.configured) {
       adlg.innerHTML = `<form method="dialog"><h2>Accounts</h2>
-        <p class="hint">Accounts aren't set up in this build yet. The app still works and saves your courses on this computer.</p>
-        <p class="hint">To turn accounts on, follow <b>Accounts</b> in the project README (about 5 minutes with a free Supabase project).</p>
+        <p class="hint">Accounts aren’t available in this build yet. You don’t need one: everything works and saves on this computer.</p>
         <div class="actions"><span style="flex:1"></span><button class="btn primary" value="close">OK</button></div></form>`;
       return;
     }
-    if (acct.user) {
-      adlg.innerHTML = `<form method="dialog"><h2>Your account</h2>
-        <div class="acct-card"><span class="avatar lg">${esc(acct.user.email[0].toUpperCase())}</span><div><b>${esc(acct.user.email)}</b><span>Your courses sync to this account. Only you can see them.</span></div></div>
-        <p class="hint">Signing out removes this account's copy from this computer. Everything stays in your account, ready when you sign in again here or anywhere else. This computer goes back to the courses it had before you signed in.</p>
-        ${note}
-        <div class="actions"><button type="button" class="btn ghost danger" id="signOutBtn">Sign out</button><span style="flex:1"></span><button class="btn primary" value="close">Done</button></div></form>`;
-      adlg.querySelector('#signOutBtn').onclick = async () => {
-        await d.account.signOut();
-        try { localStorage.removeItem('ssync-account-cache-v1'); } catch { /* nothing cached */ }
-        location.reload();
-      };
-      return;
-    }
-    const actions = (label) => `<div class="actions"><span style="flex:1"></span><button type="button" class="btn" id="authCancel">Cancel</button><button type="submit" class="btn primary" id="authSubmit">${label}</button></div>`;
-    if (mode === 'google') {
-      adlg.innerHTML = `<form id="authForm"><h2>Continue in your browser</h2>
-        <p class="hint">We opened Google sign-in in your web browser. Choose your account there, and you'll be signed in here automatically.</p>
-        <div class="waiting"><span class="spinner" aria-hidden="true"></span>Waiting for Google…</div>
-        ${note}
-        <div class="actions"><span style="flex:1"></span><button type="button" class="btn" id="authCancel">Cancel</button></div></form>`;
-      $('authCancel').onclick = () => { d.account.cancelGoogle(); mode = 'in'; renderAccount(); };
-      return;
-    }
-    if (mode === 'reset1') {
+    if (acct.user) { renderSignedIn(note); return; }
+    if (mode === 'code') {
+      adlg.innerHTML = `<form id="authForm"><h2>Check your email</h2>
+        <p class="hint">We sent a 6-digit code to <b>${esc(pendingEmail)}</b>. It can take a minute to arrive, so check spam too. The code works for 15 minutes.</p>
+        ${codeField}${note}
+        <p class="hint"><button type="button" class="linkish" id="resendCode">Send a new code</button></p>
+        ${actions('Confirm')}</form>`;
+      $('resendCode').onclick = async () => { const r = await d.account.resend(pendingEmail); renderAccount(r.ok ? 'Sent a new code. Use the newest email.' : r.message, !r.ok); $('authCode').focus(); };
+    } else if (mode === 'reset1') {
       adlg.innerHTML = `<form id="authForm"><h2>Reset your password</h2>
-        <p class="hint">Enter your account's email. We'll send a code you can use to choose a new password.</p>
+        <p class="hint">Enter your account’s email. We’ll send a code you can use to choose a new password.</p>
         <section class="field"><label for="authEmail">Email</label><input type="email" id="authEmail" autocomplete="email" required></section>
         ${note}${actions('Send code')}</form>`;
     } else if (mode === 'reset2') {
       adlg.innerHTML = `<form id="authForm"><h2>Choose a new password</h2>
-        <p class="hint">If an account exists for <b>${esc(resetEmail)}</b>, we sent it a code. It can take a minute to arrive, so check spam too.</p>
-        <section class="field"><label for="authCode">Code from the email</label><input type="text" id="authCode" class="code-in" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,10}" maxlength="10" required></section>
-        <section class="field"><label for="authPass">New password</label><input type="password" id="authPass" autocomplete="new-password" minlength="8" required><p class="hint">At least 8 characters.</p></section>
+        <p class="hint">If there’s an account for <b>${esc(pendingEmail)}</b>, we sent it a 6-digit code. Check spam too.</p>
+        ${codeField}
+        <section class="field"><label for="authPass">New password</label><input type="password" id="authPass" autocomplete="new-password" minlength="8" maxlength="128" required>${PASS_HINT}</section>
         ${note}
         <p class="hint"><button type="button" class="linkish" id="resendCode">Send a new code</button></p>
         ${actions('Save password')}</form>`;
-      $('resendCode').onclick = async () => { const r = await d.account.requestReset(resetEmail); renderAccount(r.ok ? 'Sent a new code.' : r.message, !r.ok); };
+      $('resendCode').onclick = async () => { const r = await d.account.requestReset(pendingEmail); renderAccount(r.ok ? 'Sent a new code. Use the newest email.' : r.message, !r.ok); };
     } else {
       const up = mode === 'up';
       adlg.innerHTML = `<form id="authForm"><h2>${up ? 'Create your account' : 'Sign in'}</h2>
+        <p class="hint">Optional. SemesterSync works fully without an account, and your courses stay on this computer either way.</p>
         <div class="seg" role="group" aria-label="Account action"><button type="button" data-m="in" aria-pressed="${!up}">Sign in</button><button type="button" data-m="up" aria-pressed="${up}">Create account</button></div>
-        <button type="button" class="btn google-btn" id="googleBtn">${GOOGLE_G}Continue with Google</button>
-        <div class="or"><span>or use email</span></div>
-        <section class="field"><label for="authEmail">Email</label><input type="email" id="authEmail" autocomplete="email" required></section>
+        <section class="field"><label for="authEmail">Email</label><input type="email" id="authEmail" autocomplete="email" maxlength="254" required></section>
         <section class="field"><div class="label-row"><label for="authPass">Password</label>${up ? '' : '<button type="button" class="linkish" id="forgotBtn">Forgot password?</button>'}</div>
-          <input type="password" id="authPass" autocomplete="${up ? 'new-password' : 'current-password'}" minlength="8" required>
-          ${up ? '<p class="hint">At least 8 characters.</p>' : ''}</section>
-        ${up ? '<p class="hint">The courses on this computer move into your new account, so nothing is lost.</p>' : ''}
+          <input type="password" id="authPass" autocomplete="${up ? 'new-password' : 'current-password'}" minlength="${up ? 8 : 1}" maxlength="128" required>
+          ${up ? PASS_HINT : ''}</section>
         ${note}${actions(up ? 'Create account' : 'Sign in')}</form>`;
       adlg.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { mode = b.dataset.m; const em = $('authEmail').value; renderAccount(); $('authEmail').value = em; $('authEmail').focus(); });
-      $('googleBtn').onclick = startGoogle;
       if (!up) $('forgotBtn').onclick = () => { const em = $('authEmail').value; mode = 'reset1'; renderAccount(); $('authEmail').value = em; $('authEmail').focus(); };
     }
-    $('authCancel').onclick = () => { if (mode.startsWith('reset')) { mode = 'in'; renderAccount(); } else adlg.close(); };
+    $('authCancel').onclick = () => { if (['reset1', 'reset2', 'code'].includes(mode)) { mode = 'in'; renderAccount(); if ($('authEmail')) $('authEmail').value = pendingEmail; } else adlg.close(); };
     $('authForm').addEventListener('submit', onAuthSubmit);
   }
-  let resetEmail = '';
-  async function finishSignIn() {
-    await moveLocalCoursesIntoAccount();
-    try { localStorage.setItem('ssync-onboarded', '1'); } catch { /* fine */ }
-    location.reload(); // the page reloads and loads courses from the account
-  }
-  const localCourses = () => {
-    let raw = [];
-    try { raw = JSON.parse(localStorage.getItem('ssync-courses-v1') || '[]'); } catch { /* nothing saved locally */ }
-    return raw.map(json => { try { return { json, c: JSON.parse(json) }; } catch { return null; } }).filter(Boolean);
-  };
-  // The account already has courses and this computer has its own: let the person choose.
-  function askMerge(mine, accountCount) {
-    return new Promise(resolve => {
-      adlg.innerHTML = `<form method="dialog"><h2>Courses on this computer</h2>
-        <p class="hint">Your account already has ${accountCount} course${accountCount === 1 ? '' : 's'}. This computer has ${mine.length} of its own: <b>${esc(mine.map(x => x.c.code).join(', '))}</b>.</p>
-        <p class="hint"><b>Add them</b> copies them into your account next to the courses already there (up to 8 in all). <b>Keep separate</b> leaves them on this computer: you'll see them again whenever you're signed out.</p>
-        <div class="actions"><span style="flex:1"></span><button type="button" class="btn" id="mergeNo">Keep separate</button><button type="button" class="btn primary" id="mergeYes">Add them</button></div></form>`;
-      adlg.querySelector('#mergeNo').onclick = () => resolve(false);
-      adlg.querySelector('#mergeYes').onclick = () => resolve(true);
-      if (!adlg.open) adlg.showModal();
-    });
-  }
-  async function startGoogle() {
-    mode = 'google'; renderAccount();
-    const res = await d.account.google();
-    if (mode !== 'google') return; // cancelled in the meantime
-    if (res.ok) { await finishSignIn(); return; }
-    mode = 'in';
-    renderAccount(res.cancelled ? '' : res.message, !res.cancelled);
-  }
-  async function moveLocalCoursesIntoAccount() {
-    const listed = await d.cloud.list();
-    if (!listed.ok) return;
-    try { localStorage.removeItem('ssync-account-cache-v1'); } catch { /* fine */ } // a different person may have used this computer
-    const at = Date.now();
-    const mine = localCourses().filter(x => !x.c.sample);
-    const accountCourses = listed.docs.filter(x => String(x.id).startsWith('course-'));
-    if (listed.docs.some(x => x.id === 'meta')) {
-      // The account already has a semester. Only add this computer's own courses, and only if asked.
-      if (!mine.length) return;
-      const have = new Set(accountCourses.map(x => x.id));
-      const fresh = mine.filter(x => !have.has('course-' + x.c.id)).slice(0, Math.max(0, 8 - accountCourses.length));
-      if (!fresh.length || !(await askMerge(fresh, accountCourses.length))) return;
-      for (const x of fresh) await d.cloud.set('course-' + x.c.id, { json: x.json, at });
+  const when = iso => { const t = Date.parse(iso); if (!t) return ''; const m = Math.round((Date.now() - t) / 60000); return m < 15 ? 'active now' : m < 60 * 24 ? `active ${Math.round(m / 60) || 1} h ago` : `active ${new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`; };
+  async function renderSignedIn(note) {
+    const back = '<button type="button" class="btn" id="acctBack">Back</button>';
+    if (mode === 'password') {
+      adlg.innerHTML = `<form id="authForm"><h2>Change password</h2>
+        <section class="field"><label for="curPass">Current password</label><input type="password" id="curPass" autocomplete="current-password" maxlength="128" required></section>
+        <section class="field"><label for="authPass">New password</label><input type="password" id="authPass" autocomplete="new-password" minlength="8" maxlength="128" required>${PASS_HINT}</section>
+        <p class="hint">Other computers signed in to this account will be signed out.</p>
+        ${note}<div class="actions"><span style="flex:1"></span>${back}<button type="submit" class="btn primary" id="authSubmit">Change password</button></div></form>`;
+    } else if (mode === 'delete') {
+      adlg.innerHTML = `<form id="authForm"><h2>Delete account</h2>
+        <p class="hint">This deletes the account <b>${esc(acct.user.email)}</b> right away and signs out every computer. It can’t be undone.</p>
+        <p class="hint">Your courses on this computer aren’t touched: they stay here and keep working without an account.</p>
+        <section class="field"><label for="authPass">Enter your password to confirm</label><input type="password" id="authPass" autocomplete="current-password" maxlength="128" required></section>
+        ${note}<div class="actions"><span style="flex:1"></span>${back}<button type="submit" class="btn danger" id="authSubmit">Delete account</button></div></form>`;
+    } else if (mode === 'devices') {
+      adlg.innerHTML = `<form method="dialog"><h2>Signed-in computers</h2><div id="devList"><p class="hint">Loading…</p></div>${note}
+        <div class="actions"><button type="button" class="btn ghost danger" id="revokeOthers" hidden>Sign out all others</button><span style="flex:1"></span>${back}</div></form>`;
+      $('acctBack').onclick = () => { mode = 'me'; renderAccount(); };
+      const r = await d.account.sessions();
+      if (mode !== 'devices') return;
+      if (!r.ok) { if (r.code === 'unauthorized') { await refreshAcct(); return; } $('devList').innerHTML = `<p class="msg bad">${esc(r.message)}</p>`; return; }
+      $('devList').innerHTML = `<ul class="dev-list">${r.sessions.map(s => `<li><div><b>${esc(s.device || 'Unknown computer')}</b><span>${s.current ? 'This computer' : esc(when(s.lastSeen))}</span></div>${s.current ? '' : `<button type="button" class="btn sm ghost" data-revoke="${esc(s.id)}">Sign out</button>`}</li>`).join('')}</ul>`;
+      $('revokeOthers').hidden = r.sessions.length < 2;
+      adlg.querySelectorAll('[data-revoke]').forEach(b => b.onclick = async () => { b.disabled = true; const x = await d.account.revokeSession(b.dataset.revoke); if (!x.ok) { renderAccount(x.message, true); return; } renderAccount('Signed out that computer.'); });
+      $('revokeOthers').onclick = async () => { const x = await d.account.revokeOthers(); renderAccount(x.ok ? 'Signed out every other computer.' : x.message, !x.ok); };
+      return;
+    } else {
+      mode = 'me';
+      const syncText = acct.sync
+        ? (window.CloudSync && window.CloudSync.isOn() ? 'Cloud sync is on.' : 'Cloud sync is off: nothing is uploaded.') + ' Manage it in <b>Your data</b>.'
+        : 'Your courses are saved on this computer. This account server doesn’t offer cloud sync, so nothing is uploaded.';
+      adlg.innerHTML = `<form method="dialog"><h2>Your account</h2>
+        <div class="acct-card"><span class="avatar lg">${esc(acct.user.email[0].toUpperCase())}</span><div><b>${esc(acct.user.email)}</b><span>${acct.offline ? 'Offline: couldn’t check with the account server.' : 'Signed in'}</span></div></div>
+        <p class="hint">${syncText}</p>
+        <div class="row" style="display:flex;gap:6px;flex-wrap:wrap"><button type="button" class="btn sm" id="pwBtn">Change password</button><button type="button" class="btn sm" id="devBtn">Signed-in computers</button><button type="button" class="btn sm ghost danger" id="delBtn">Delete account…</button></div>
+        <p class="hint">Signing out keeps your courses on this computer. On a shared computer, tick the box to remove them from here too.</p>
+        <label class="hint" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="wipeLocal"> Also remove my courses, settings and backups from this computer</label>
+        ${note}
+        <div class="actions"><button type="button" class="btn ghost danger" id="signOutBtn">Sign out</button><span style="flex:1"></span><button class="btn primary" value="close">Done</button></div></form>`;
+      for (const [id, m] of [['pwBtn', 'password'], ['devBtn', 'devices'], ['delBtn', 'delete']]) $(id).onclick = () => { mode = m; renderAccount(); const f = adlg.querySelector('input'); if (f) f.focus(); };
+      $('signOutBtn').onclick = async () => {
+        const wipe = $('wipeLocal').checked;
+        if (window.CloudSync) window.CloudSync.forget(acct.user.id);
+        await d.account.signOut();
+        try {
+          localStorage.removeItem('ssync-account-cache-v1');
+          if (wipe) for (const k of Object.keys(localStorage)) if (k.startsWith('ssync-') && !['ssync-format', 'ssync-onboarded', 'ssync-theme', 'ssync-migrated-supabase'].includes(k)) localStorage.removeItem(k);
+        } catch { /* nothing to remove */ }
+        if (wipe) { await d.backup.clear().catch(() => {}); await d.sources.clear().catch(() => {}); }
+        location.reload();
+      };
       return;
     }
-    await d.cloud.set('meta', { v: 1 });
-    for (const x of localCourses()) await d.cloud.set('course-' + x.c.id, { json: x.json, at });
-    let extras = [];
-    try { extras = JSON.parse(localStorage.getItem('ssync-extras-v1') || '[]'); } catch { /* nothing saved locally */ }
-    for (const [id, json] of extras) if (id === 'extras' || String(id).startsWith('deck-')) await d.cloud.set(id, { json, at });
+    $('acctBack').onclick = () => { mode = 'me'; renderAccount(); };
+    $('authForm').addEventListener('submit', onAuthSubmit);
+  }
+  async function refreshAcct(msg, bad) {
+    acct = await d.account.status();
+    paintAcctBtn();
+    if (!acct.user && !['in', 'up', 'code', 'reset1', 'reset2'].includes(mode)) mode = 'in';
+    renderAccount(msg || (!acct.user && mode === 'in' ? 'You’ve been signed out. Sign in again.' : ''), bad);
+  }
+  async function finishSignIn() {
+    try { localStorage.setItem('ssync-onboarded', '1'); } catch { /* fine */ }
+    acct = await d.account.status();
+    if (acct.sync) { paintAcctBtn(); adlg.close(); await askToSync(); return; }
+    // No sync yet: nothing on the page changes, so there's no need to reload.
+    paintAcctBtn(); mode = 'me'; renderAccount(`Signed in as ${acct.user ? acct.user.email : ''}.`);
+  }
+  // Nothing is uploaded without asking. After signing in (or from Your data), this lists what would go and
+  // what's already in the account; unticked courses stay only on this computer. "Not now" uploads nothing.
+  const sdlg = document.createElement('dialog');
+  sdlg.className = 'settings sync-choose';
+  document.body.appendChild(sdlg);
+  async function askToSync() {
+    const s = await d.account.status();
+    if (!s.user || !s.sync || !window.CloudSync) return;
+    if (window.CloudSync.isOn()) { toast('Cloud sync is already on.'); return; }
+    const remote = await window.CloudSync.accountDocs().catch(() => null);
+    if (!remote) { toast('Couldn’t reach your account. Sync stays off for now; turn it on later from Your data.'); return; }
+    const mine = window.SSyncPage.state.courses.filter(c => !c.sample);
+    const there = new Map(remote.filter(x => x.doc_id.startsWith('course-') && x.doc_id !== 'course-inbox').map(x => { let code = 'A course'; try { code = JSON.parse(x.body).code || code; } catch { /* unreadable */ } return [x.doc_id.slice(7), code]; }));
+    const onlyThere = [...there].filter(([id]) => !mine.some(c => c.id === id)).map(([, code]) => code);
+    const rows = mine.map(c => `<label class="toggle-row" style="justify-content:flex-start;gap:10px"><input type="checkbox" data-cid="${esc(c.id)}" checked><span><b>${esc(c.code)}</b>${c.title ? ' · ' + esc(c.title) : ''}${there.has(c.id) ? ' <small>(also in your account; the two are combined)</small>' : ''}</span></label>`).join('');
+    sdlg.innerHTML = `<form method="dialog"><h2>Cloud sync</h2>
+      <p class="hint">Choose what to keep in <b>${esc(s.user.email)}</b>. Each course goes with its deliverables, scores, notes, syllabus text and study sets. Only you can see your account’s data. A complete copy always stays on this computer.</p>
+      ${mine.length ? `<div class="sync-list">${rows}</div>` : '<p class="hint">This computer has no courses of its own yet.</p>'}
+      <label class="toggle-row" style="justify-content:flex-start;gap:10px"><input type="checkbox" id="syncSettings" checked><span><b>Settings, Inbox and study history</b> <small>reminders, planner hours, GPA inputs, focus history</small></span></label>
+      ${onlyThere.length ? `<p class="hint">Your account also has ${onlyThere.length} course${onlyThere.length === 1 ? '' : 's'} that aren’t on this computer: <b>${esc(onlyThere.slice(0, 8).join(', '))}</b>. ${onlyThere.length === 1 ? 'It’s' : 'They’re'} added here.</p>` : ''}
+      <p class="hint">If the same course changed here and in the account in a way that can’t be combined, you choose which to keep. You can change all of this later: each course has a sync switch, and <b>Your data</b> turns sync off.</p>
+      <p class="msg bad" id="syncMsg" hidden></p>
+      <div class="actions"><span style="flex:1"></span><button type="button" class="btn" data-sc="no">Not now</button><button type="button" class="btn primary" data-sc="yes">${mine.length ? 'Upload and turn on sync' : 'Turn on sync'}</button></div></form>`;
+    const choice = await new Promise(resolve => {
+      sdlg.querySelectorAll('[data-sc]').forEach(b => b.onclick = () => resolve(b.dataset.sc));
+      sdlg.addEventListener('cancel', () => resolve('no'), { once: true });
+      sdlg.showModal();
+    });
+    if (choice !== 'yes') { sdlg.close(); return; }
+    const off = [...sdlg.querySelectorAll('[data-cid]')].filter(x => !x.checked).map(x => x.dataset.cid);
+    const settings = sdlg.querySelector('#syncSettings').checked;
+    // A copy of everything on this computer, before the first sync touches it.
+    const backup = await d.backup.write('before-first-sync', JSON.stringify(window.SSyncPage.backupData())).catch(() => null);
+    if (!backup || !backup.ok) { const m = sdlg.querySelector('#syncMsg'); m.textContent = 'Couldn’t save a backup first, so nothing was changed. Check there’s free disk space and try again.'; m.hidden = false; return; }
+    sdlg.close();
+    await window.CloudSync.enable({ off, settings });
+    toast(window.CloudSync.isOn() ? 'Cloud sync is on' : 'Couldn’t turn on sync');
   }
   async function onAuthSubmit(e) {
     e.preventDefault();
-    const btn = $('authSubmit'), label = btn.textContent; btn.disabled = true; btn.textContent = 'Working…';
-    const keep = (msg, bad) => { const em = $('authEmail') && $('authEmail').value; renderAccount(msg, bad); if (em && $('authEmail')) $('authEmail').value = em; };
-    if (mode === 'reset1') {
-      resetEmail = $('authEmail').value.trim();
-      const r = await d.account.requestReset(resetEmail);
-      if (!r.ok) { keep(r.message, true); return; }
-      mode = 'reset2'; renderAccount(); $('authCode').focus(); return;
+    const btn = $('authSubmit'); btn.disabled = true; btn.textContent = 'Working…';
+    const val = id => ($(id) ? $(id).value : '');
+    const keep = (msg, bad, ids = ['authEmail', 'authCode']) => { const v = ids.map(val); renderAccount(msg, bad); ids.forEach((id, i) => { if ($(id) && v[i]) $(id).value = v[i]; }); };
+    let r;
+    switch (mode) {
+      case 'code':
+        r = await d.account.verify(pendingEmail, val('authCode'));
+        if (!r.ok) { keep(r.message, true); return; }
+        await finishSignIn(); return;
+      case 'reset1':
+        pendingEmail = val('authEmail').trim();
+        r = await d.account.requestReset(pendingEmail);
+        if (!r.ok) { keep(r.message, true); return; }
+        mode = 'reset2'; renderAccount(); $('authCode').focus(); return;
+      case 'reset2':
+        r = await d.account.completeReset(pendingEmail, val('authCode'), val('authPass'));
+        if (!r.ok) { keep(r.message, true); return; }
+        await finishSignIn(); return;
+      case 'password':
+        r = await d.account.changePassword(val('curPass'), val('authPass'));
+        if (!r.ok) { if (r.code === 'unauthorized') { await refreshAcct(); return; } renderAccount(r.message, true); return; }
+        mode = 'me'; renderAccount('Password changed. Other computers were signed out.'); return;
+      case 'delete':
+        r = await d.account.deleteAccount(val('authPass'));
+        if (!r.ok) { if (r.code === 'unauthorized') { await refreshAcct(); return; } renderAccount(r.message, true); return; }
+        if (window.CloudSync) window.CloudSync.forget(acct.user.id);
+        try { for (const k of Object.keys(localStorage)) if (k.startsWith('ssync-sync-consent-')) localStorage.removeItem(k); localStorage.removeItem('ssync-account-cache-v1'); } catch { /* nothing to remove */ }
+        mode = 'in'; await refreshAcct('Your account was deleted. Your courses are still on this computer.'); paintAcctBtn(); return;
     }
-    if (mode === 'reset2') {
-      const r = await d.account.completeReset(resetEmail, $('authCode').value.trim(), $('authPass').value);
-      if (!r.ok) { const code = $('authCode').value; renderAccount(r.message, true); $('authCode').value = code; return; }
-      await finishSignIn(); return;
-    }
-    const email = $('authEmail').value.trim(), password = $('authPass').value;
-    const res = mode === 'up' ? await d.account.signUp(email, password) : await d.account.signIn(email, password);
-    if (!res.ok) { keep(res.message, true); btn.textContent = label; return; }
-    if (res.needsConfirm) { mode = 'in'; renderAccount(`Almost done. We sent a confirmation link to ${email}. Click it, then sign in here.`); $('authEmail').value = email; return; }
+    const email = val('authEmail').trim(), password = val('authPass');
+    pendingEmail = email;
+    r = mode === 'up' ? await d.account.signUp(email, password) : await d.account.signIn(email, password);
+    if (r.needsCode) { mode = 'code'; renderAccount(r.ok ? '' : r.message); $('authCode').focus(); return; }
+    if (!r.ok) { keep(r.message, true, ['authEmail']); return; }
     await finishSignIn();
   }
-  async function openAccount() {
+  async function openAccount(want) {
     acct = await d.account.status();
-    if (mode !== 'google') mode = mode === 'up' ? 'up' : 'in';
+    paintAcctBtn();
+    if (acct.user) mode = 'me';
+    else if (want === 'up') mode = 'up';
+    else if (!['in', 'up', 'code', 'reset1', 'reset2'].includes(mode)) mode = 'in';
     renderAccount();
-    adlg.showModal();
+    if (!adlg.open) adlg.showModal();
     const em = $('authEmail'); if (em) em.focus();
   }
-  acctBtn.onclick = openAccount;
+  acctBtn.onclick = () => openAccount();
   d.account.status().then(s => { acct = s; paintAcctBtn(); });
   paintAcctBtn();
 
   /* ---------- Menu shortcuts ---------- */
-  d.onMenu('account', openAccount);
+  d.onMenu('account', () => openAccount());
   d.onMenu('settings', openSettings);
+  d.onMenu('feedback', openFeedback);
   d.onMenu('new-course', () => { const b = $('addCourse'); if (b) b.click(); else toast('You can track up to 8 courses'); });
   d.onMenu('open-file', () => $('fileInput').click());
   d.onMenu('export-ics', () => { const b = $('syncBtn'); if (b.disabled) toast('Nothing to export. Turn on calendar sync for some deliverables first.'); else b.click(); });
@@ -311,7 +421,11 @@
   for (const [menu, detail] of [['backup-export', 'export'], ['backup-import', 'import'], ['data', 'data'], ['search', 'search'], ['welcome', 'welcome'], ['keys', 'keys']]) d.onMenu(menu, () => page(detail));
   for (let i = 0; i < 8; i++) d.onMenu('tab-' + i, () => { const b = document.querySelectorAll('.nav [data-tab]')[i]; if (b) b.click(); });
   // The page asks for these from its welcome guide and Your data.
-  document.addEventListener('ssync:open', e => { if (e.detail === 'settings') openSettings(); else if (e.detail === 'account') { mode = 'up'; openAccount(); } });
+  document.addEventListener('ssync:open', async e => {
+    if (e.detail === 'settings') openSettings();
+    else if (e.detail === 'account') openAccount('up');
+    else if (e.detail === 'sync') { acct = await d.account.status(); if (!acct.user) { openAccount(); return; } if (!acct.sync) { toast('Cloud sync isn’t available on this account server.'); return; } await askToSync(); }
+  });
 
   // Reminders moved to the page (Today tab). Someone who turned them off in 1.2 keeps them off.
   d.settings.get().then(s => { settings = s; if (s.reminders === false) document.dispatchEvent(new CustomEvent('ssync:remind-legacy-off')); });

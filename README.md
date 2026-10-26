@@ -41,7 +41,7 @@ Updating keeps your courses, settings and sign-in.
 
 The first launch opens a short welcome guide: start with your own syllabus, explore sample courses or restore a backup; what works offline and what uses Claude; accounts (optional); and your study hours. **Help → Welcome Guide** shows it again.
 
-Claude features (photo scanning, study sets, coach) need a Claude API key in Settings. Study rooms use Supabase Realtime (on by default in new projects); only a name, current task and timer are shared, and nothing is stored.
+Claude features (photo scanning, study sets, coach) need a Claude API key in Settings. Study rooms use SemesterSync's own server and don't need an account; only a name, current task, timer and chat are shared, and nothing is stored.
 
 ## Run it while developing
 
@@ -55,16 +55,25 @@ Set `SEMESTERSYNC_DATA_DIR=/some/folder` to run on a separate profile without to
 ## Tests
 
 ```bash
-npm test
+npm test                # the app, with a fake Claude API and a fake account server
+npm run test:backend    # the account server's tests (needs PostgreSQL 17; see backend/README.md)
+npm run test:accounts   # the real app against the real account server on a throwaway database
 ```
 
-Runs the real app on a throwaway profile with a fake Claude API and a fake account server (a duplicate-function check, 23 parser checks, then 151 app checks, about 3 minutes). Nothing touches your data, your Claude key or Supabase. It covers first launch, the Today view and reminders (intervals, morning summary, overdue and high-priority warnings, quiet hours, pausing, no repeats, the tray summary), syllabus review, calendar export, backup and restore, damaged data, the planner, search and shortcuts, and sync between two computers: changes flowing both ways, the same course edited on both, working offline, deleting, signing out, and signing into an account that already has courses. The GitHub workflow runs it on macOS and Windows for every push and before any release.
+```bash
+npm run test:sync       # two app windows syncing through the real account server
+```
+
+`npm test` runs the real app on a throwaway profile with a fake Claude API and a fake account server (a duplicate-function check, 23 parser checks, 16 merge checks, then 198 app checks, about 3 minutes). Nothing touches your data or your Claude key. It covers first launch, the Today view and reminders (intervals, morning summary, overdue and high-priority warnings, quiet hours, pausing, no repeats, the tray summary), syllabus review, calendar export, backup and restore, damaged data, upgrading data from earlier versions, copying an old account's courses to the computer, the planner, search and shortcuts, and cloud sync: asking first, per-course choices, changes flowing both ways, combining edits, each **Needs your choice** button, offline, removing courses and removing data from the account. The GitHub workflow runs it on macOS and Windows for every push and before any release.
+
+`npm run test:backend` starts a temporary PostgreSQL cluster in a temp folder and runs the server's tests (38 checks: sign-up codes, sign-in, sessions, password reset, rate limits, sync versions and conflicts, deletion markers, limits, one person never reaching another's account or documents, nothing secret in logs or responses). `npm run test:accounts` starts the server the same way and drives the app's real account dialog against it (37 checks); `npm run test:sync` has two app windows sync through it, including both saving at the same moment (21 checks).
 
 ## Backups and safety
 
 - **Backup file:** **Your data → Export backup** (or `⌘⇧B` / `Ctrl+Shift+B`) saves one `.json` file with every course, score, study set and setting. **Restore from a file** asks whether to replace what you have or add the courses you don't have yet.
 - **Daily backups:** the app also writes one to its `Backups` folder each day you use it and keeps the last 30 (**Your data → Open Backups folder**).
 - **Safety copies:** taken automatically before anything that removes data (removing a course, clearing samples, marking past deadlines done, deleting a study set, restoring, Start over) and when the same thing was edited on two computers. Most of those also show an **Undo** button.
+- **Upgrading:** the first time a version with local-first storage starts, it saves the exact data it finds to a `SemesterSync-before-local-first-….json` file in the Backups folder before writing anything. That file can be restored from **Your data** like any backup.
 - **Damaged data:** saved courses are read one at a time, so one damaged entry is skipped instead of losing the semester. The damaged data is kept and the app says what happened.
 - **Spreadsheet:** **Your data → Deliverables as a spreadsheet** exports every deliverable as `.csv`.
 
@@ -82,50 +91,66 @@ Without a key the app still works. It uses the built-in local parser.
 
 ## Accounts
 
-People can create an account (email + password) so their courses sync to that account and follow them to any computer. Accounts use [Supabase](https://supabase.com) (free tier is plenty). Until you set it up, the app works without accounts and saves on each computer.
+Accounts are optional. SemesterSync opens straight into the app, every feature works without an account, and courses are always saved on the computer. An account is an email and password on SemesterSync's own server (`backend/`); no outside sign-in service is used.
 
-**One-time setup (about 5 minutes):**
+- **Create account:** email and password (8 to 128 characters). The server emails a 6-digit code (valid 15 minutes, 5 tries); typing it in confirms the email and signs you in. **Send a new code** sends another; only the newest works.
+- **Sign in / Sign out.** Signing out keeps the courses on the computer. On a shared computer, tick **Also remove my courses, settings and backups from this computer**.
+- **Forgot password?** emails a 6-digit code; type it with a new password. Every computer signed in to the account is signed out.
+- **Your account:** change password (signs out the other computers), see **Signed-in computers** and sign any of them out, and **Delete account** (asks for the password; deletes the account at once, and leaves the courses on the computer).
+- **Where the session lives:** the main process (`src/account.js`) talks to the API; the page never sees the session token. The token is encrypted with the system keychain (`safeStorage`) in `account.bin` in the app's data folder; without a keychain it's kept in memory until the app quits.
+- **Server address:** `SEMESTERSYNC_API_URL`, or `apiUrl` in `src/config.json`. Installed builds only accept `https://` addresses; `http://localhost` works only when running from source. While it's empty, the account dialog says accounts aren't available and everything else works as usual.
 
-1. Create a free project at [supabase.com](https://supabase.com).
-2. In the dashboard, open **SQL Editor → New query**, paste [`supabase/schema.sql`](supabase/schema.sql) and choose **Run**. This creates the `user_docs` table and the row-level security rules that let each person read and write only their own rows.
-3. Open **Project Settings → API** and copy the **Project URL** and the **anon public** key into `src/config.json`:
-   ```json
-   { "supabaseUrl": "https://YOUR-PROJECT.supabase.co", "supabaseAnonKey": "eyJ…" }
-   ```
-   The anon key is meant to ship inside apps; the security rules are what protect the data. Never put the `service_role` key in the app.
-4. Optional: in **Authentication → Sign In / Providers → Email**, turn off **Confirm email** while you're testing. With it on, new users must click the link in their inbox before signing in.
-5. `npm start`, choose **Sign in** in the top bar, then **Create account**.
+To run the server locally, see [`backend/README.md`](backend/README.md).
 
-**Forgot password** (needed once): the app has people type a code from the reset email instead of clicking a link. In **Authentication → Emails → Reset Password**, add the code to the template, for example:
-```html
-<h2>Reset your SemesterSync password</h2>
-<p>Enter this code in the app: <strong>{{ .Token }}</strong></p>
-<p>If you didn't ask for this, you can ignore this email.</p>
-```
+### Cloud sync (optional)
 
-**Sign in with Google:**
+- **Nothing is uploaded until you agree.** After signing in (or from **Your data → Turn on cloud sync…**), a checklist shows every course on the computer, plus **Settings, Inbox and study history**, and what's already in the account. Untick anything you want to keep only on this computer. **Not now** uploads nothing. A backup file (`SemesterSync-before-first-sync-….json`) is saved before the first sync.
+- **This computer stays the main copy.** Everything saves here first and works offline; the status says **Offline** and syncs by itself when the connection is back.
+- **Each course has a switch** next to **Remove course**: **Synced** or **Only on this computer**. Turning it off asks whether to remove the course from the account (other computers keep a safety copy) or leave the account's copy as it is. New courses sync automatically while sync is on.
+- **When two computers change the same course,** the changes are combined deliverable by deliverable and field by field: a score added on one and a due date moved on the other both stay. Settings and study history are always combined. Only when the same thing was changed differently on both (or deleted on one and edited on the other) does it go to **Your data → Needs your choice**, which shows both versions and where the other came from: **Keep this computer's**, **Keep the other**, or **Keep both** (the other becomes a second course). Until then this computer keeps its own version, everything else keeps syncing, and the version not kept goes to Safety copies.
+- **Two computers saving at the same moment can't overwrite each other:** each change says which version it was based on, and the server refuses one that didn't see the latest copy. The app then combines and tries again.
+- **Removing courses:** a course removed on one computer is removed on the others, which keep a safety copy first.
+- **Turn off cloud sync** (in **Your data**) keeps everything on the computer. **Remove my data from the account…** (password required) deletes everything synced from the server and turns sync off on every computer; the account stays.
+- **Limits:** 25 MB and 300 documents per account, 1 MB per course. Original syllabus files (PDFs) aren't synced.
+- **Not encrypted end to end:** the data is encrypted in transit (HTTPS) and on the server's disk, but the server could read it. That keeps password reset from losing data; end-to-end encryption can be added later.
 
-1. In [Google Cloud Console](https://console.cloud.google.com/), create a project, set up the **OAuth consent screen** (External, app name "SemesterSync"), then **Credentials → Create credentials → OAuth client ID → Web application**.
-2. Under **Authorized redirect URIs**, add `https://YOUR-PROJECT.supabase.co/auth/v1/callback`. Copy the client ID and secret.
-3. In Supabase, open **Authentication → Sign In / Providers → Google**, turn it on, and paste the client ID and secret.
-4. In Supabase, open **Authentication → URL Configuration → Redirect URLs** and add `http://127.0.0.1:53682/auth/callback`. After someone signs in with Google in their browser, Google sends them to this address, where the app is listening for a few minutes.
-5. While the consent screen is in **Testing**, only Google accounts you list as test users can sign in. Publish it to let anyone sign in.
+**Old accounts (Supabase, versions 1.0 to 1.4).** The first time this version starts on a computer that was signed in to an old account, it copies that account's courses to the computer:
 
-How it works:
+- A raw copy of the old account goes to `Backups/SemesterSync-old-account-copy-….json` first. It can be restored from **Your data** like any backup.
+- Edits made on the computer that never reached the account are kept. Where the account has a newer copy the computer hadn't changed, the account's copy is used. If a course changed in both places, the computer's copy is kept and the other goes to **Your data → Safety copies**.
+- Courses that were only on the computer stay.
+- Then the old sign-in is removed (`session.bin` is deleted) and a note explains what happened.
+- If the old account can't be reached and the computer has no copy of it, nothing changes and it tries again on the next start.
 
-- Sign-in happens in the main process (`src/cloud.js`). The session token is encrypted with the system keychain and kept in the app's data folder, so people stay signed in.
-- The first time someone creates an account or signs in to an empty account, the courses already on that computer move into it. Signing into an account that already has courses asks first: **Add them** (this computer's own courses join the account; sample courses never do) or **Keep separate**.
-- Each course, study set and the settings are separate documents. Every save first reads the account: a document only another computer changed is taken as is; when both changed it, the newer edit wins and the other copy goes to **Your data → Safety copies**. Open windows pick up changes from other computers when you switch back to them and every couple of minutes.
-- Offline, changes save on the computer and the status says **Offline**. The app retries on its own (5 s, 15 s, 30 s, then every minute or two) and syncs when the connection is back, even after a restart.
-- Signing out removes the account's copy from that computer and returns the app to the courses saved there before.
-- **Forgot password** emails a code; people type it into the app with a new password.
-- **Continue with Google** opens Google in the browser and finishes sign-in in the app (PKCE, so the login code is useless to anyone else).
+This copy is the only thing still using Supabase. It stays until people have had time to update (see `docs/stage5-release-plan.md`); then `src/legacy.js` and the Supabase project go.
+
+## Feedback
+
+**Help → Send Feedback…** (also linked from Settings) asks six optional questions and sends the answers to a Google Form you own. Only the typed answers are sent: nothing from courses, grades, the account or the computer. If sending fails, the answers stay in the form, and **Copy answers** lets people send them another way. Until a form is set up, the dialog says feedback isn't set up yet and **Send** is off.
+
+**Set up the form (once, about 5 minutes):**
+
+1. Go to [forms.google.com](https://forms.google.com) and start a **Blank form**. Call it "SemesterSync feedback".
+2. Add six **Paragraph** questions, in this order, and leave **Required** off:
+   1. What college courses are you taking?
+   2. How do you currently track assignments?
+   3. What do you like most about SemesterSync?
+   4. What confused you or didn't work?
+   5. What would make you use SemesterSync every week?
+   6. Would you pay for additional features? Why or why not?
+3. In the form's **Settings → Responses**, turn off **Collect email addresses** and **Limit to 1 response**. Both make people sign in to Google, and the app can't do that.
+4. Open the form's **⋮** menu → **Get pre-filled link**. Type `Q1` in the first answer, `Q2` in the second, and so on to `Q6`. Click **Get link**, then **Copy link**.
+5. Put that link in `src/config.json` as `"feedbackForm"`, then build the installers. To try it without building, use `SEMESTERSYNC_FEEDBACK_URL="<the link>" npm start`.
+
+**Read the feedback** in the form's **Responses** tab. **Link to Sheets** puts every answer in a spreadsheet, and **⋮ → Get email notifications for new responses** emails you each time someone sends feedback.
+
+The link isn't a secret: it only lets people answer the form, as anyone with the form's link could. The app only sends to `docs.google.com` form addresses, and only uses the link if all six questions are in it.
 
 ## Build installers
 
 ```bash
-npm run dist:mac   # dist/SemesterSync-1.4.0-universal.dmg (Intel + Apple silicon)
-npm run dist:win   # dist/SemesterSync-Setup-1.4.0.exe (x64 + arm64)
+npm run dist:mac   # dist/SemesterSync-1.5.0-universal.dmg (Intel + Apple silicon)
+npm run dist:win   # dist/SemesterSync-Setup-1.5.0.exe (x64 + arm64)
 scripts/verify-installer.sh   # installs/mounts the build, starts it on a throwaway profile, checks signing
 ```
 
@@ -148,18 +173,25 @@ After adding them, set the repository variable `REQUIRE_SIGNED` to `1` so a rele
 | Path | What it does |
 |---|---|
 | `src/main.js` | Window, menus, Claude API calls, settings, saving files, daily backups, original syllabus files |
-| `src/cloud.js` | Accounts and cloud sync (Supabase) |
-| `src/config.json` | Your Supabase project URL and anon key |
-| `supabase/schema.sql` | Database table and security rules to run once |
+| `src/account.js` | Accounts and sync requests to SemesterSync's own API; keeps the session token |
+| `src/rooms.js` | Study rooms: one WebSocket per room to SemesterSync's own API |
+| `src/legacy.js` | The one-time copy of old Supabase accounts |
+| `src/feedback.js` | Help → Send Feedback: posts the answers to the Google Form in `config.json` |
+| `src/config.json` | The SemesterSync server address (`apiUrl`), the feedback form link (`feedbackForm`), and the old Supabase project (only for copying old accounts) |
+| `backend/` | The account server (FastAPI + PostgreSQL); see `backend/README.md` |
+| `supabase/schema.sql` | The old account database (only for the old accounts still being copied) |
 | `src/preload.js` | The only bridge between the page and the main process (context isolation on, no Node in the page) |
 | `src/renderer/index.html`, `app.js` | The app UI |
 | `src/renderer/bridge.js` | Connects the UI's Claude calls to the main process |
-| `src/renderer/desktop.js` | Settings and account dialogs, menu shortcuts |
+| `src/renderer/desktop.js` | Settings, account and cloud sync dialogs, menu shortcuts |
+| `src/renderer/cloudsync.js` | Cloud sync with the account server: versions, Needs your choice, the per-course switch |
+| `src/renderer/merge.js` | Combines two edited copies of a course, study set or settings (`test/merge.test.js`) |
 | `src/assets/` | Menu-bar and tray icons |
 | `src/renderer/taskparse.js` | Reads a task typed in plain English (runs on the device; no API) |
 | `src/renderer/quickadd.html`, `quickadd.js` | The Quick Add window |
 | `test/taskparse.test.js` | Parser unit tests (`npm run test:parse`) |
 | `test/e2e.js`, `test/fake-claude.js` | The regression tests (`npm test` runs both) |
+| `test/accounts.e2e.js`, `test/sync.e2e.js` | The app against the real account server (`npm run test:accounts`, `npm run test:sync`) |
 | `scripts/verify-installer.sh` | Checks a built installer installs and starts |
 | `build/icon.png` | App icon (electron-builder converts it to .icns and .ico) |
 
